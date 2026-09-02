@@ -1,0 +1,21 @@
+# CMake / Visual Studio output
+build/
+build-*/
+CMakeUserPresets.json
+.vs/
+*.user
+*.suo
+
+# External model weights are downloaded separately and are release inputs,
+# not source files committed to Git.
+external-models/
+release/
+
+# Temporary archives / incomplete dependency downloads
+third_party/rife-tntwise*
+third_party/*-archive/
+*.zip
+
+# Local logs and debugger output
+*.log
+*.dmp

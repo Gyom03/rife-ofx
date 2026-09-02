@@ -1,0 +1,7 @@
+# id;display name;relative model directory;alignment;arbitrary timestep;ensemble;estimated GPU MB;backend;redistribution status
+rife-v4.6;RIFE 4.6;rife-v4.6;32;true;false;0;rife-ncnn;review-required
+rife-v4.22-lite;RIFE 4.22 Lite;rife-v4.22-lite;128;true;false;0;rife-ncnn;external-install-required
+rife-v4.25-lite;RIFE 4.25 Lite;rife-v4.25-lite;128;true;false;0;rife-ncnn;external-install-required
+rife-v4.25;RIFE 4.25;rife-v4.25;64;true;false;0;rife-ncnn;external-install-required
+rife-v4.26;RIFE 4.26;rife-v4.26;64;true;false;0;rife-ncnn;external-install-required
+rife-v4.26-large;RIFE 4.26 Large;rife-v4.26-large;64;true;false;0;rife-ncnn;external-install-required
