@@ -17,6 +17,22 @@ struct CachedFrame {
   std::vector<float> rgba;
 };
 
+// The host renders the same time at different render scales: a proxy or
+// thumbnail pass and then the full resolution one. Those return images of
+// different sizes, so the scale is part of a frame's identity. Keying the cache
+// on time alone hands a proxy-sized image back to a full resolution render.
+struct FrameKey {
+  OfxTime time = 0.0;
+  double renderScaleX = 1.0;
+  double renderScaleY = 1.0;
+
+  bool operator<(const FrameKey& other) const {
+    if (time != other.time) return time < other.time;
+    if (renderScaleX != other.renderScaleX) return renderScaleX < other.renderScaleX;
+    return renderScaleY < other.renderScaleY;
+  }
+};
+
 // Thin wrapper over OfxImageEffectSuiteV1::clipGetImage that performs the
 // random temporal reads for one effect instance. It never derives a time of its
 // own: callers pass the exact OfxTime computed by TemporalMapping, and every
@@ -29,9 +45,10 @@ class TemporalFrameProvider {
                         OfxImageEffectHandle effect,
                         bool debug);
 
-  // Releases the references held for the previous output frame. Call once per
-  // render action before the first getFrame.
-  void beginOutputFrame();
+  // Releases the references held for the previous output frame, and records the
+  // render scale the host asked for. Call once per render action before the
+  // first getFrame.
+  void beginOutputFrame(double renderScaleX, double renderScaleY);
   OfxStatus getFrame(OfxTime time, const CachedFrame** frame);
 
   void setDebug(bool debug) { debug_ = debug; }
@@ -47,7 +64,9 @@ class TemporalFrameProvider {
   OfxImageClipHandle sourceClip_ = nullptr;
   OfxImageEffectHandle effect_ = nullptr;
   bool debug_ = false;
-  std::map<OfxTime, std::shared_ptr<CachedFrame>> cache_;
+  double renderScaleX_ = 1.0;
+  double renderScaleY_ = 1.0;
+  std::map<FrameKey, std::shared_ptr<CachedFrame>> cache_;
   // Keeps pointers returned for the current output frame alive even when the
   // bounded cache evicts an older timestamp during the same request.
   std::vector<std::shared_ptr<CachedFrame>> activeFrameRefs_;

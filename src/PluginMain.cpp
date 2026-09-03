@@ -825,12 +825,13 @@ bool sameBounds(const OfxRectI& left, const OfxRectI& right) {
 // times computed above, never by args.time.
 OfxStatus fetchTemporalInputs(InstanceData* data,
                               const rifeofx::TemporalMapping& mapping, bool debug,
-                              bool wantSignatures, TemporalInputs* inputs) {
+                              bool wantSignatures, double renderScaleX,
+                              double renderScaleY, TemporalInputs* inputs) {
   if (!data || !data->temporalProvider || !inputs) {
     return kOfxStatErrBadHandle;
   }
   data->temporalProvider->setDebug(debug);
-  data->temporalProvider->beginOutputFrame();
+  data->temporalProvider->beginOutputFrame(renderScaleX, renderScaleY);
 
   if (debug) {
     std::ostringstream stream;
@@ -1053,7 +1054,12 @@ void recordCadenceSample(InstanceData* data, OfxTime time,
 // One record per output frame, in the shape the cadence work is checked against.
 void logCadenceRender(InstanceData* data, OfxTime outputTime,
                       const rifeofx::TemporalMapping& mapping,
-                      const TemporalInputs& inputs) {
+                      const TemporalInputs& inputs, double renderScaleX,
+                      double renderScaleY) {
+  const int sourceWidth =
+      inputs.frameA ? inputs.frameA->bounds.x2 - inputs.frameA->bounds.x1 : 0;
+  const int sourceHeight =
+      inputs.frameA ? inputs.frameA->bounds.y2 - inputs.frameA->bounds.y1 : 0;
   const rifeofx::Rational ratio = data->calibrator.ratio();
   const std::int64_t phase = data->calibrator.phase();
   const std::int64_t timelineTime = static_cast<std::int64_t>(std::llround(outputTime));
@@ -1080,7 +1086,9 @@ void logCadenceRender(InstanceData* data, OfxTime outputTime,
   stream << "calibration="
          << rifeofx::describeCalibrationState(data->calibrator.state())
          << " policy=" << rifeofx::describeBlendPolicy(mapping.policy)
-         << " identicalInputs=" << (inputs.identicalImages ? 1 : 0);
+         << " identicalInputs=" << (inputs.identicalImages ? 1 : 0)
+         << " renderScale=" << renderScaleX << "x" << renderScaleY
+         << " sourceBounds=" << sourceWidth << "x" << sourceHeight;
   rifeofx::debugLogBlock(stream.str());
   rifeofx::appendTemporalLog(stream.str());
 }
@@ -1830,6 +1838,16 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
     return kOfxStatErrBadHandle;
   }
 
+  // The host renders the same time at several scales (proxy, thumbnail, full).
+  // Images fetched at one scale must never be reused at another.
+  double renderScale[2] = {1.0, 1.0};
+  if (gPropertySuite->propGetDoubleN(inArgs, kOfxImageEffectPropRenderScale, 2,
+                                     renderScale) != kOfxStatOK ||
+      !(renderScale[0] > 0.0) || !(renderScale[1] > 0.0)) {
+    renderScale[0] = 1.0;
+    renderScale[1] = 1.0;
+  }
+
   const bool debug = getDebugParam(data, time);
   if (probeRetimerContext()) {
     logRetimerProbe(data, time);
@@ -1863,8 +1881,8 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
 
   // 2. explicit temporal reads at those two times.
   TemporalInputs inputs;
-  OfxStatus status =
-      fetchTemporalInputs(data, mapping, debug, calibrating, &inputs);
+  OfxStatus status = fetchTemporalInputs(data, mapping, debug, calibrating,
+                                        renderScale[0], renderScale[1], &inputs);
   if (status != kOfxStatOK || !inputs.frameA || !inputs.frameB) {
     return gImageEffectSuite->abort(effect)
                ? kOfxStatOK
@@ -1880,7 +1898,7 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
     }
   }
   if (cadenceMode && debug) {
-    logCadenceRender(data, time, mapping, inputs);
+    logCadenceRender(data, time, mapping, inputs, renderScale[0], renderScale[1]);
   }
   if (debug && inputs.signaturesComputed) {
     std::ostringstream stream;
@@ -1965,25 +1983,56 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
   const int x2 = std::min({renderWindow.x2, outputBounds.x2, sourceBounds.x2});
   const int y2 = std::min({renderWindow.y2, outputBounds.y2, sourceBounds.y2});
 
-  if (x1 < x2 && y1 < y2 && outputSource) {
-    constexpr int channels = 4;
-    for (int y = y1; y < y2; ++y) {
-      if (gImageEffectSuite->abort(effect)) {
-        break;
-      }
-      auto* outputRow = static_cast<float*>(outputData) +
-                        ((y - outputBounds.y1) * outputRowBytes / sizeof(float)) +
-                        (x1 - outputBounds.x1) * channels;
-      const float* sourceRow = outputSource->data() +
-                               static_cast<size_t>(y - sourceBounds.y1) * sourceWidth * channels +
-                               static_cast<size_t>(x1 - sourceBounds.x1) * channels;
-      for (int x = x1; x < x2; ++x) {
+  // The render window must be filled in full. Anything left untouched is
+  // whatever the host had in that buffer, which reaches the screen as garbage,
+  // so a geometry mismatch has to look like a missing region rather than like
+  // uninitialised memory.
+  const int windowX1 = std::max(renderWindow.x1, outputBounds.x1);
+  const int windowY1 = std::max(renderWindow.y1, outputBounds.y1);
+  const int windowX2 = std::min(renderWindow.x2, outputBounds.x2);
+  const int windowY2 = std::min(renderWindow.y2, outputBounds.y2);
+  const bool coversWindow = outputSource && x1 <= windowX1 && y1 <= windowY1 &&
+                            x2 >= windowX2 && y2 >= windowY2;
+  if (!coversWindow) {
+    std::ostringstream stream;
+    stream << "source does not cover the render window: source=["
+           << sourceBounds.x1 << "," << sourceBounds.y1 << "," << sourceBounds.x2
+           << "," << sourceBounds.y2 << "] window=[" << windowX1 << "," << windowY1
+           << "," << windowX2 << "," << windowY2 << "] renderScale="
+           << renderScale[0] << "x" << renderScale[1]
+           << "; filling the remainder with black";
+    rifeofx::debugLog(stream.str());
+    rifeofx::appendTemporalLog(stream.str());
+  }
+
+  constexpr int channels = 4;
+  for (int y = windowY1; y < windowY2; ++y) {
+    if (gImageEffectSuite->abort(effect)) {
+      break;
+    }
+    auto* outputRow = static_cast<float*>(outputData) +
+                      (static_cast<size_t>(y - outputBounds.y1) * outputRowBytes /
+                       sizeof(float)) +
+                      static_cast<size_t>(windowX1 - outputBounds.x1) * channels;
+    const bool rowHasSource = outputSource && y >= y1 && y < y2;
+    const float* sourceRow =
+        rowHasSource ? outputSource->data() +
+                           static_cast<size_t>(y - sourceBounds.y1) * sourceWidth *
+                               channels
+                     : nullptr;
+    for (int x = windowX1; x < windowX2; ++x) {
+      if (rowHasSource && x >= x1 && x < x2) {
+        const float* pixel =
+            sourceRow + static_cast<size_t>(x - sourceBounds.x1) * channels;
         for (int channel = 0; channel < channels; ++channel) {
-          outputRow[channel] = sourceRow[channel];
+          outputRow[channel] = pixel[channel];
         }
-        outputRow += channels;
-        sourceRow += channels;
+      } else {
+        for (int channel = 0; channel < channels; ++channel) {
+          outputRow[channel] = 0.0f;
+        }
       }
+      outputRow += channels;
     }
   }
 

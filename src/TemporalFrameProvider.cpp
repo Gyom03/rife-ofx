@@ -29,7 +29,12 @@ TemporalFrameProvider::TemporalFrameProvider(
       effect_(effect),
       debug_(debug) {}
 
-void TemporalFrameProvider::beginOutputFrame() { activeFrameRefs_.clear(); }
+void TemporalFrameProvider::beginOutputFrame(double renderScaleX,
+                                             double renderScaleY) {
+  activeFrameRefs_.clear();
+  renderScaleX_ = renderScaleX > 0.0 ? renderScaleX : 1.0;
+  renderScaleY_ = renderScaleY > 0.0 ? renderScaleY : 1.0;
+}
 
 OfxStatus TemporalFrameProvider::getFrame(OfxTime time,
                                            const CachedFrame** frame) {
@@ -40,7 +45,8 @@ OfxStatus TemporalFrameProvider::getFrame(OfxTime time,
   // The time is the one TemporalMapping computed. It is passed to the host
   // untouched: no clamping to the clip's reported media-local frame range,
   // because Resolve may use a different origin for the effect instance.
-  auto cached = cache_.find(time);
+  const FrameKey key{time, renderScaleX_, renderScaleY_};
+  auto cached = cache_.find(key);
   if (cached != cache_.end()) {
     activeFrameRefs_.push_back(cached->second);
     *frame = cached->second.get();
@@ -142,7 +148,8 @@ OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
   }
 
   auto inserted = cache_.emplace(
-      time, std::make_shared<CachedFrame>(std::move(loaded)));
+      FrameKey{time, renderScaleX_, renderScaleY_},
+      std::make_shared<CachedFrame>(std::move(loaded)));
   while (cache_.size() > kMaxCachedFrames) {
     auto eviction = cache_.begin();
     if (eviction == inserted.first) {
