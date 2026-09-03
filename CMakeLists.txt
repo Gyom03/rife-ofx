@@ -90,6 +90,8 @@ if(RIFE_ENABLE_INFERENCE)
 endif()
 
 set(RIFE_PLUGIN_SOURCES
+  src/CadenceMapping.h
+  src/CadenceMapping.cpp
   src/TemporalMapping.h
   src/TemporalMapping.cpp
   src/DebugLog.h
@@ -107,6 +109,14 @@ add_executable(TemporalMappingTest
 target_compile_features(TemporalMappingTest PRIVATE cxx_std_17)
 target_include_directories(TemporalMappingTest PRIVATE "${OPENFX_INCLUDE_DIR}")
 add_test(NAME TemporalMappingTest COMMAND TemporalMappingTest)
+
+# Cadence ratio, phase calibration and the arithmetic mapping, including a walk
+# over 60 consecutive timeline frames.
+add_executable(CadenceMappingTest
+  src/CadenceMappingTest.cpp
+  src/CadenceMapping.cpp)
+target_compile_features(CadenceMappingTest PRIVATE cxx_std_17)
+add_test(NAME CadenceMappingTest COMMAND CadenceMappingTest)
 if(RIFE_ENABLE_INFERENCE)
   list(APPEND RIFE_PLUGIN_SOURCES
     src/RifeEngine.cpp

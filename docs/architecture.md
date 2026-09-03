@@ -58,6 +58,16 @@ struct TemporalMapping {
 jamais d'une valeur codee en dur. `sourceFrameA = floor(sourcePosition)`,
 `sourceFrameB = sourceFrameA + 1`, `timestep = sourcePosition - sourceFrameA`.
 
+### Cadence conformee (mode par defaut)
+
+Le mode par defaut est `Conformed Cadence (auto phase)`. Il constate que l'hote
+a deja reechantillonne le clip et adresse les images originales dans le flux
+conforme, au lieu de supposer un axe temporel source separe. La phase du conform
+est mesuree une fois par comparaison de signatures, puis le mapping est
+entierement arithmetique sur un ratio rationnel. Voir [cadence.md](cadence.md).
+
+Les deux modes ci-dessous restent disponibles pour le diagnostic.
+
 ### Index de frame vers OfxTime
 
 OpenFX ne definit pas de correspondance universelle entre un index de frame
