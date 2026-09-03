@@ -127,8 +127,14 @@ struct InstanceData {
   OfxParamHandle sourceTimeParam = nullptr;
   bool retimerContext = false;
 
+  std::string contextName;
   std::unique_ptr<rifeofx::TemporalFrameProvider> temporalProvider;
   ClipTimingInfo timing;
+  // Previous RetimerProbe sample, used to report how SourceTime advances
+  // relative to the render time.
+  bool retimerProbePrimed = false;
+  OfxTime retimerProbePreviousOutputTime = 0.0;
+  double retimerProbePreviousSourceTime = 0.0;
   // One-shot diagnostics, run on the first render that has Debug enabled.
   bool firstRenderLogged = false;
   bool renderTimeProbeDone = false;
@@ -205,6 +211,20 @@ void setString(OfxPropertySetHandle props, const char* name, int index,
 
 void setInt(OfxPropertySetHandle props, const char* name, int index, int value) {
   gPropertySuite->propSetInt(props, name, index, value);
+}
+
+// Everything the retimer experiment produces carries this tag so a single
+// DebugView filter isolates it from the temporal trace.
+void retimerProbeLog(const std::string& message) {
+  const std::string tagged = "[RifeOFX][RetimerProbe] " + message;
+  rifeofx::debugLogBlock(tagged);
+  rifeofx::appendTemporalLog(tagged);
+}
+
+void retimerProbeBlock(const std::string& body) {
+  const std::string tagged = "[RifeOFX][RetimerProbe]\n" + body;
+  rifeofx::debugLogBlock(tagged);
+  rifeofx::appendTemporalLog(tagged);
 }
 
 void logHostInt(const char* property, const char* label) {
@@ -697,6 +717,72 @@ void probeRenderTimeAddressing(InstanceData* data, OfxTime renderTime,
   rifeofx::appendTemporalLog(stream.str());
 }
 
+// Per output frame, only while RIFEOFX_PROBE_RETIMER is set. Reports the value
+// the host publishes in the mandated SourceTime parameter and how it advances
+// against the render time, which is what distinguishes a source position driven
+// by the original media cadence from one that merely follows the timeline.
+void logRetimerProbe(InstanceData* data, OfxTime outputTime) {
+  double sourceTime = 0.0;
+  OfxStatus sourceTimeStatus = kOfxStatErrUnknown;
+  if (data->sourceTimeParam) {
+    sourceTimeStatus = gParameterSuite->paramGetValueAtTime(
+        data->sourceTimeParam, outputTime, &sourceTime);
+  }
+
+  const double sourceClipFps = data->timing.sourceUnmappedRateAvailable
+                                   ? data->timing.sourceUnmappedFrameRate
+                                   : data->timing.sourceMappedFrameRate;
+  const double hostFps = data->timing.projectRateAvailable
+                             ? data->timing.projectFrameRate
+                             : data->timing.outputFrameRate;
+  const double manualSourceFps = getSourceFrameRate(data, outputTime);
+
+  std::ostringstream stream;
+  stream << std::fixed;
+  stream << "context=" << (data->contextName.empty() ? "unknown" : data->contextName)
+         << "\n";
+  stream << "outputTime=" << std::setprecision(3) << outputTime << "\n";
+  if (sourceTimeStatus == kOfxStatOK) {
+    stream << "sourceTime=" << std::setprecision(6) << sourceTime << "\n";
+  } else {
+    stream << "sourceTime=absent paramPresent="
+           << (data->sourceTimeParam ? 1 : 0)
+           << " getValueStatus=" << sourceTimeStatus << "\n";
+  }
+
+  if (sourceTimeStatus == kOfxStatOK && data->retimerProbePrimed) {
+    const double outputDelta = outputTime - data->retimerProbePreviousOutputTime;
+    const double sourceDelta = sourceTime - data->retimerProbePreviousSourceTime;
+    stream << "outputTimeDelta=" << std::setprecision(6) << outputDelta << "\n";
+    stream << "sourceTimeDelta=" << std::setprecision(6) << sourceDelta << "\n";
+    if (std::abs(outputDelta) > 1e-9) {
+      // 1.0 means SourceTime just follows the timeline. sourceFPS/outputFPS
+      // (0.8333 for 50 into 60) means it follows the original media cadence.
+      stream << "sourcePerOutput=" << std::setprecision(6)
+             << (sourceDelta / outputDelta) << "\n";
+    }
+  } else {
+    stream << "sourceTimeDelta=n/a (first sample or no SourceTime)\n";
+  }
+
+  stream << "sourceClipFPS=" << std::setprecision(3) << sourceClipFps << "\n";
+  stream << "hostFPS=" << std::setprecision(3) << hostFps << "\n";
+  stream << "manualSourceFPS=" << std::setprecision(3) << manualSourceFps << "\n";
+  if (hostFps > 0.0) {
+    stream << "expectedSourcePerOutputIfMediaRate=" << std::setprecision(6)
+           << (manualSourceFps / hostFps) << "\n";
+  }
+  stream << "sourceTimeParamPresent=" << (data->sourceTimeParam ? 1 : 0)
+         << " retimerContext=" << (data->retimerContext ? 1 : 0);
+  retimerProbeBlock(stream.str());
+
+  if (sourceTimeStatus == kOfxStatOK) {
+    data->retimerProbePrimed = true;
+    data->retimerProbePreviousOutputTime = outputTime;
+    data->retimerProbePreviousSourceTime = sourceTime;
+  }
+}
+
 // Once per instance: label a run of consecutive render times by the first time
 // that produced each image. A host that conformed the media to the timeline
 // cadence repeats one image per cycle, so the pattern shows both that fact and
@@ -800,10 +886,30 @@ OfxStatus describe(OfxImageEffectHandle effect) {
            kOfxImageEffectContextFilter);
   if (probeRetimerContext()) {
     // Filter stays at index 0 so a host that supports both keeps using it.
-    setString(effectProps, kOfxImageEffectPropSupportedContexts, 1,
-              kOfxImageEffectContextRetimer);
-    rifeofx::debugLog(
-        "RIFEOFX_PROBE_RETIMER is set: also advertising kOfxImageEffectContextRetimer");
+    const OfxStatus retimerContextStatus = gPropertySuite->propSetString(
+        effectProps, kOfxImageEffectPropSupportedContexts, 1,
+        kOfxImageEffectContextRetimer);
+    retimerProbeLog(
+        "advertising kOfxImageEffectContextRetimer at index 1, setStatus=" +
+        std::to_string(retimerContextStatus));
+
+    // Read the property back. If the host rejected the retimer entry it either
+    // reports a smaller dimension or a different string, and that is the answer
+    // to whether the context is accepted at all.
+    int declaredContexts = 0;
+    const OfxStatus dimensionStatus = gPropertySuite->propGetDimension(
+        effectProps, kOfxImageEffectPropSupportedContexts, &declaredContexts);
+    std::ostringstream contexts;
+    contexts << "supportedContexts readBackStatus=" << dimensionStatus
+             << " dimension=" << declaredContexts;
+    for (int index = 0; index < declaredContexts; ++index) {
+      char* value = nullptr;
+      const OfxStatus valueStatus = gPropertySuite->propGetString(
+          effectProps, kOfxImageEffectPropSupportedContexts, index, &value);
+      contexts << " [" << index << "]="
+               << (valueStatus == kOfxStatOK && value ? value : "<unreadable>");
+    }
+    retimerProbeLog(contexts.str());
   }
   setString(effectProps, kOfxImageEffectPropSupportedPixelDepths, 0,
            kOfxBitDepthFloat);
@@ -876,8 +982,7 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
 
   // Logged unconditionally: this line is the empirical answer to "does this host
   // ever offer the retimer context to a third party plugin?".
-  rifeofx::debugLog(std::string("describeInContext context=") + context);
-  rifeofx::appendTemporalLog(std::string("describeInContext context=") + context);
+  retimerProbeLog(std::string("describeInContext context=") + context);
 
   const bool filterContext =
       std::strcmp(context, kOfxImageEffectContextFilter) == 0;
@@ -936,6 +1041,9 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
     status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeDouble,
                                           kOfxImageEffectRetimerParamName,
                                           &paramProps);
+    retimerProbeLog(std::string("paramDefine ") +
+                    kOfxImageEffectRetimerParamName +
+                    " status=" + std::to_string(status));
     if (status != kOfxStatOK) {
       return status;
     }
@@ -1108,9 +1216,11 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
       context) {
     data->retimerContext =
         std::strcmp(context, kOfxImageEffectContextRetimer) == 0;
-    rifeofx::debugLog(std::string("createInstance context=") + context);
+    data->contextName = context;
+    retimerProbeLog(std::string("createInstance context=") + context);
   } else {
-    rifeofx::debugLog("createInstance context unavailable; assuming filter");
+    data->contextName = "unavailable";
+    retimerProbeLog("createInstance context unavailable; assuming filter");
   }
 
   OfxStatus status = gImageEffectSuite->clipGetHandle(
@@ -1171,20 +1281,31 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
     // The mandated SourceTime pseudo parameter only exists in the retimer
     // context, and only that context defines it, so it is never looked up on a
     // plain filter instance.
+    // Normally only the retimer context defines it. While probing, look it up
+    // in every context: a host could in principle expose it elsewhere, and a
+    // definitive "absent" is as much of an answer as a definitive "present".
     OfxStatus retimerParamStatus = kOfxStatErrUnknown;
-    if (data->retimerContext) {
+    if (data->retimerContext || probeRetimerContext()) {
       retimerParamStatus = fetchOptionalParam(
           paramSet, kOfxImageEffectRetimerParamName, &data->sourceTimeParam);
       if (retimerParamStatus != kOfxStatOK) {
         data->sourceTimeParam = nullptr;
       }
     }
+
     std::ostringstream stream;
-    stream << "retimer SourceTime param status=" << retimerParamStatus
+    stream << "SourceTime paramGetHandle status=" << retimerParamStatus
            << " present=" << (data->sourceTimeParam ? 1 : 0)
-           << " retimerContext=" << (data->retimerContext ? 1 : 0);
-    rifeofx::debugLog(stream.str());
-    rifeofx::appendTemporalLog(stream.str());
+           << " retimerContext=" << (data->retimerContext ? 1 : 0)
+           << " context=" << data->contextName;
+    if (data->sourceTimeParam) {
+      double initialSourceTime = 0.0;
+      const OfxStatus valueStatus = gParameterSuite->paramGetValue(
+          data->sourceTimeParam, &initialSourceTime);
+      stream << " initialValueStatus=" << valueStatus
+             << " initialValue=" << initialSourceTime;
+    }
+    retimerProbeLog(stream.str());
   }
 
   if (status == kOfxStatOK) {
@@ -1314,6 +1435,13 @@ OfxStatus getClipPreferences(OfxImageEffectHandle effect,
     return kOfxStatErrBadHandle;
   }
 
+  // In the retimer context the host owns the output cadence and duration, so
+  // republishing a frame rate here would only confound the probe.
+  if (data->retimerContext) {
+    retimerProbeLog("getClipPreferences: retimer context, not overriding the frame rate");
+    return kOfxStatReplyDefault;
+  }
+
   const double targetFrameRate = getTargetFrameRate(data, 0.0);
   if (targetFrameRate <= 0.0) {
     return kOfxStatReplyDefault;
@@ -1427,6 +1555,9 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
   }
 
   const bool debug = getDebugParam(data, time);
+  if (probeRetimerContext()) {
+    logRetimerProbe(data, time);
+  }
   if (debug && !data->firstRenderLogged) {
     // Debug is usually switched on after the instance exists, so the timing
     // snapshot taken in createInstance never reaches the capture. Repeat it.
@@ -1559,8 +1690,23 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
   return kOfxStatOK;
 }
 
+// Per-frame actions are excluded: the probe needs the lifecycle, not a flood.
+bool isPerFrameAction(const char* action) {
+  return std::strcmp(action, kOfxImageEffectActionRender) == 0 ||
+         std::strcmp(action, kOfxImageEffectActionIsIdentity) == 0 ||
+         std::strcmp(action, kOfxImageEffectActionGetFramesNeeded) == 0 ||
+         std::strcmp(action, kOfxImageEffectActionGetRegionOfDefinition) == 0 ||
+         std::strcmp(action, kOfxImageEffectActionGetRegionsOfInterest) == 0;
+}
+
 OfxStatus pluginMain(const char* action, const void* handle,
                      OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs) {
+  // Traces how far the host got before it stopped talking to us, which is what
+  // tells a rejected context apart from a context that was never offered.
+  if (probeRetimerContext() && !isPerFrameAction(action)) {
+    retimerProbeLog(std::string("action=") + action);
+  }
+
   if (!gHost && std::strcmp(action, kOfxActionLoad) != 0) {
     return kOfxStatErrMissingHostFeature;
   }
@@ -1619,9 +1765,15 @@ OfxPlugin gPlugin = {
 }  // namespace
 
 extern "C" __declspec(dllexport) int OfxGetNumberOfPlugins(void) {
+  if (probeRetimerContext()) {
+    retimerProbeLog("OfxGetNumberOfPlugins -> 1");
+  }
   return 1;
 }
 
 extern "C" __declspec(dllexport) OfxPlugin* OfxGetPlugin(int nth) {
+  if (probeRetimerContext()) {
+    retimerProbeLog("OfxGetPlugin nth=" + std::to_string(nth));
+  }
   return nth == 0 ? &gPlugin : nullptr;
 }
