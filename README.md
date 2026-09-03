@@ -16,8 +16,12 @@ The current release validates these models:
 - RIFE 4.26 Large
 
 The OFX effect appears as **RIFE Frame Interpolator** in the **Open Source AI**
-category. It requests a temporal window containing `F[n-1]`, `F[n]`, `F[n+1]`
-and `F[n+2]`; inference uses `F[n]` and `F[n+1]`.
+category. It is a temporal OpenFX effect: for each output time it converts the
+render time into a position inside the original media, then explicitly requests
+the two source frames that bracket that position through the OpenFX temporal
+clip access, and runs RIFE with the fractional timestep between them. See
+[docs/architecture.md](docs/architecture.md) and
+[docs/temporal-test.md](docs/temporal-test.md).
 
 ## Installation
 
@@ -32,7 +36,11 @@ engine.
 ## Controls
 
 - Enabled
-- Interpolation Amount: 0.0 to 1.0
+- Detected Framerate (read-only, reported by the host)
+- Source Framerate: original media cadence, override it when the host only
+  exposes the conformed timeline rate
+- Use Timeline Framerate / Target Framerate
+- Source Time Base: how a source frame index becomes the time passed to the host
 - Mode: Quality or Advanced
 - Quality: Fast, Balanced, High, Maximum
 - Model: exact RIFE model selector
@@ -66,7 +74,11 @@ cmake -S . -B build-rife -G "Visual Studio 17 2022" -A x64 `
   -DVulkan_INCLUDE_DIR="$env:VULKAN_SDK\Include" `
   -DVulkan_LIBRARY="$env:VULKAN_SDK\Lib\vulkan-1.lib"
 cmake --build build-rife --config Release --parallel
+ctest --test-dir build-rife -C Release --output-on-failure
 ```
+
+`ctest` runs `TemporalMappingTest`, which covers the output-time to source-frame
+mapping without an OFX host or a GPU.
 
 To build a bundle containing all local model files, provide a model root with
 the six directories named exactly as in `models/registry.csv`:

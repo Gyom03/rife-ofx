@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(RifeOFX VERSION 0.1.0 LANGUAGES CXX)
 
+include(CTest)
+
 if(NOT WIN32)
   message(FATAL_ERROR "RifeOFX prototype currently targets Windows only.")
 endif()
@@ -88,10 +90,23 @@ if(RIFE_ENABLE_INFERENCE)
 endif()
 
 set(RIFE_PLUGIN_SOURCES
+  src/TemporalMapping.h
+  src/TemporalMapping.cpp
+  src/DebugLog.h
+  src/DebugLog.cpp
   src/PluginMain.cpp
   src/ModelRegistry.cpp
   src/TemporalFrameProvider.cpp
 )
+
+# The output-time -> source-frame mapping is pure and host independent, so it is
+# covered without Resolve, Vulkan or an OFX host in the loop.
+add_executable(TemporalMappingTest
+  src/TemporalMappingTest.cpp
+  src/TemporalMapping.cpp)
+target_compile_features(TemporalMappingTest PRIVATE cxx_std_17)
+target_include_directories(TemporalMappingTest PRIVATE "${OPENFX_INCLUDE_DIR}")
+add_test(NAME TemporalMappingTest COMMAND TemporalMappingTest)
 if(RIFE_ENABLE_INFERENCE)
   list(APPEND RIFE_PLUGIN_SOURCES
     src/RifeEngine.cpp
@@ -105,6 +120,7 @@ if(RIFE_ENABLE_INFERENCE)
   add_executable(RifeSmokeTest
     src/RifeSmokeTest.cpp
     src/ModelRegistry.cpp
+    src/DebugLog.cpp
     src/RifeEngine.cpp
     src/RifeNcnnBackend.cpp
     "${RIFE_SOURCE_DIR}/src/rife.cpp"

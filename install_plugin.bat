@@ -3,8 +3,9 @@ setlocal
 
 set "SCRIPT_DIR=%~dp0"
 set "BUNDLE=%SCRIPT_DIR%RifeFrameInterpolator.ofx.bundle"
-if not exist "%BUNDLE%" set "BUNDLE=%SCRIPT_DIR%build-rife-ai\RifeFrameInterpolator.ofx.bundle"
 if not exist "%BUNDLE%" set "BUNDLE=%SCRIPT_DIR%build-rife\RifeFrameInterpolator.ofx.bundle"
+if not exist "%BUNDLE%" set "BUNDLE=%SCRIPT_DIR%build-rife-ai\RifeFrameInterpolator.ofx.bundle"
+if not exist "%BUNDLE%" set "BUNDLE=%SCRIPT_DIR%build-release\RifeFrameInterpolator.ofx.bundle"
 if not exist "%BUNDLE%" set "BUNDLE=%SCRIPT_DIR%build\RifeFrameInterpolator.ofx.bundle"
 set "DEST=C:\Program Files\Common Files\OFX\Plugins\RifeFrameInterpolator.ofx.bundle"
 

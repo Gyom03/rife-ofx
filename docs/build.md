@@ -34,10 +34,31 @@ Le bundle est :
 build-rife\RifeFrameInterpolator.ofx.bundle
 ```
 
+et la DLL elle-meme :
+
+```text
+build-rife\RifeFrameInterpolator.ofx.bundle\Contents\Win64\RifeFrameInterpolator.ofx
+```
+
 Le build copie uniquement le manifeste et le modele de demonstration 4.6.
 Les poids 4.25 restent externes.
 
-## Tester RIFE 4.25 sans Resolve
+## Tests unitaires
+
+```powershell
+ctest --test-dir build-rife -C Release --output-on-failure
+```
+
+`TemporalMappingTest` couvre la conversion temps de sortie -> position source
+sans hote OFX ni GPU : 50 -> 60, cadences NTSC, origine de timeline non nulle,
+bords de clip, timestep proche de 0 ou 1, et les deux `SourceTimeBase`.
+Le lancer aussi directement :
+
+```powershell
+& .\build-rife\Release\TemporalMappingTest.exe
+```
+
+## Tester RIFE sans Resolve
 
 Le smoke test accepte un dossier de modeles et un manifeste separe :
 
@@ -57,36 +78,48 @@ RIFE status=0, ... model=rife-v4.25, padded=128x128
 La resolution padded depend du modele : avec l'image volontairement non alignee
 130x66, RIFE 4.25 utilise 192x128 et RIFE 4.25 Lite utilise 256x128.
 
-## Installer et tester dans Resolve
+## Installer dans Resolve
 
-Fermer Resolve, puis installer le bundle dans une console PowerShell
-administrateur :
+Fermer Resolve, puis installer le bundle depuis une console PowerShell :
 
 ```powershell
 Start-Process -FilePath ".\install_plugin.bat" -Verb RunAs -Wait
 ```
 
-Configurer ensuite les poids externes pour les nouvelles applications :
+Le script copie le bundle vers :
+
+```text
+C:\Program Files\Common Files\OFX\Plugins\RifeFrameInterpolator.ofx.bundle
+```
+
+Equivalent manuel, dans une console administrateur :
+
+```powershell
+robocopy ".\build-rife\RifeFrameInterpolator.ofx.bundle" `
+  "C:\Program Files\Common Files\OFX\Plugins\RifeFrameInterpolator.ofx.bundle" /E
+```
+
+Configurer ensuite les poids externes :
 
 ```powershell
 Start-Process -FilePath ".\install_models.bat" -Wait
 ```
 
 Relancer Resolve, ajouter `RIFE Frame Interpolator`, activer `Debug`, choisir
-`Mode=Advanced`, puis `Model=RIFE 4.25`. Commencer avec `Interpolation Amount`
-sur 0.5 et une courte plage de timeline.
-
-Dans DebugView, le premier rendu doit contenir :
-
-```text
-model=rife-v4.25 backend=NCNN/Vulkan gpu=0 ... padded=...
-```
-
-Un modele absent ou une variante non valide doit produire une erreur explicite;
-le plugin ne remplace pas silencieusement le modele par 4.6.
+`Mode=Advanced` puis le modele voulu.
 
 ## Diagnostic
 
-Le plugin ecrit ses diagnostics avec `OutputDebugStringA`. DebugView de
-Sysinternals permet de voir les timestamps temporels, le chargement du modele,
-les dimensions padded et le temps d'inference.
+Le plugin ecrit ses diagnostics avec `OutputDebugStringA`, prefixe `[RifeOFX]`,
+et duplique la meme trace dans `%TEMP%\RifeOFX-temporal.log`.
+
+Variables d'environnement, a definir avant de lancer Resolve :
+
+| Variable | Effet |
+|----------|-------|
+| `RIFEOFX_DEBUG=1` | force la trace detaillee sans attendre le parametre `Debug` |
+| `RIFEOFX_PROBE_RETIMER=1` | declare aussi `kOfxImageEffectContextRetimer` pour observer si l'hote le propose |
+| `RIFEOFX_MODELS_ROOT` | dossier externe contenant les poids |
+
+La procedure de test temporel complete est dans
+[temporal-test.md](temporal-test.md).

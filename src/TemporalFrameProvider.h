@@ -16,6 +16,10 @@ struct CachedFrame {
   std::vector<float> rgba;
 };
 
+// Thin wrapper over OfxImageEffectSuiteV1::clipGetImage that performs the
+// random temporal reads for one effect instance. It never derives a time of its
+// own: callers pass the exact OfxTime computed by TemporalMapping, and every
+// request is logged with the time that was actually asked for.
 class TemporalFrameProvider {
  public:
   TemporalFrameProvider(const OfxPropertySuiteV1* propertySuite,
@@ -24,30 +28,25 @@ class TemporalFrameProvider {
                         OfxImageEffectHandle effect,
                         bool debug);
 
+  // Releases the references held for the previous output frame. Call once per
+  // render action before the first getFrame.
+  void beginOutputFrame();
   OfxStatus getFrame(OfxTime time, const CachedFrame** frame);
-  OfxStatus getFrameOffset(OfxTime time, int offset, const CachedFrame** frame);
-  OfxStatus getTemporalWindow(OfxTime time, int before, int after,
-                              std::vector<const CachedFrame*>& frames);
 
   void setDebug(bool debug) { debug_ = debug; }
-  void setFrameRange(OfxTime firstFrame, OfxTime lastFrame);
   void clear();
 
  private:
   OfxStatus loadFrame(OfxTime time, const CachedFrame** frame);
-  void debugLog(const char* operation, OfxTime time, OfxStatus status) const;
 
   const OfxPropertySuiteV1* propertySuite_ = nullptr;
   const OfxImageEffectSuiteV1* imageEffectSuite_ = nullptr;
   OfxImageClipHandle sourceClip_ = nullptr;
   OfxImageEffectHandle effect_ = nullptr;
   bool debug_ = false;
-  bool frameRangeAvailable_ = false;
-  OfxTime firstFrame_ = 0.0;
-  OfxTime lastFrame_ = 0.0;
   std::map<OfxTime, std::shared_ptr<CachedFrame>> cache_;
-  // Keeps pointers returned for the current temporal window alive even when
-  // the bounded cache evicts an older timestamp during the same request.
+  // Keeps pointers returned for the current output frame alive even when the
+  // bounded cache evicts an older timestamp during the same request.
   std::vector<std::shared_ptr<CachedFrame>> activeFrameRefs_;
 };
 

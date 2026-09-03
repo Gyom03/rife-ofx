@@ -1,9 +1,10 @@
 #include "TemporalFrameProvider.h"
 
-#include <windows.h>
+#include "DebugLog.h"
 
 #include <algorithm>
 #include <cstring>
+#include <iomanip>
 #include <sstream>
 #include <utility>
 
@@ -13,10 +14,6 @@ namespace {
 
 constexpr int kRGBAChannels = 4;
 constexpr size_t kMaxCachedFrames = 16;
-
-void debugMessage(const std::string& message) {
-  OutputDebugStringA(("[RifeOFX] " + message + "\n").c_str());
-}
 
 }  // namespace
 
@@ -32,25 +29,7 @@ TemporalFrameProvider::TemporalFrameProvider(
       effect_(effect),
       debug_(debug) {}
 
-void TemporalFrameProvider::setFrameRange(OfxTime firstFrame,
-                                          OfxTime lastFrame) {
-  if (firstFrame > lastFrame) {
-    return;
-  }
-  frameRangeAvailable_ = true;
-  firstFrame_ = firstFrame;
-  lastFrame_ = lastFrame;
-}
-
-void TemporalFrameProvider::debugLog(const char* operation, OfxTime time,
-                                     OfxStatus status) const {
-  if (!debug_) {
-    return;
-  }
-  std::ostringstream stream;
-  stream << operation << " time=" << time << " status=" << status;
-  debugMessage(stream.str());
-}
+void TemporalFrameProvider::beginOutputFrame() { activeFrameRefs_.clear(); }
 
 OfxStatus TemporalFrameProvider::getFrame(OfxTime time,
                                            const CachedFrame** frame) {
@@ -58,90 +37,36 @@ OfxStatus TemporalFrameProvider::getFrame(OfxTime time,
     return kOfxStatErrBadHandle;
   }
 
-  const OfxTime requestedTime = time;
-  if (frameRangeAvailable_) {
-    time = std::clamp(time, firstFrame_, lastFrame_);
-  }
-
+  // The time is the one TemporalMapping computed. It is passed to the host
+  // untouched: no clamping to the clip's reported media-local frame range,
+  // because Resolve may use a different origin for the effect instance.
   auto cached = cache_.find(time);
   if (cached != cache_.end()) {
     activeFrameRefs_.push_back(cached->second);
     *frame = cached->second.get();
-    debugLog(requestedTime == time ? "getFrame(cache)" : "getFrame(cache, clamped)",
-             time, kOfxStatOK);
-    return kOfxStatOK;
-  }
-  const OfxStatus status = loadFrame(time, frame);
-  if (requestedTime != time && status != kOfxStatOK) {
-    debugLog("getFrame(clamped)", requestedTime, status);
-  }
-  return status;
-}
-
-OfxStatus TemporalFrameProvider::getFrameOffset(OfxTime time, int offset,
-                                                 const CachedFrame** frame) {
-  // OFX frame-based hosts conventionally express adjacent frames as +/-1 time
-  // units (the official GetFramesNeeded example uses currentFrame +/- 1).
-  return getFrame(time + static_cast<OfxTime>(offset), frame);
-}
-
-OfxStatus TemporalFrameProvider::getTemporalWindow(
-    OfxTime time, int before, int after,
-    std::vector<const CachedFrame*>& frames) {
-  frames.clear();
-  activeFrameRefs_.clear();
-  if (before < 0 || after < 0) {
-    return kOfxStatFailed;
-  }
-
-  const size_t frameCount = static_cast<size_t>(before + after + 1);
-  frames.assign(frameCount, nullptr);
-
-  // Load the central frame first. At a clip boundary the center can be valid
-  // while the previous/next context frame is outside the source range.
-  const size_t centerIndex = static_cast<size_t>(before);
-  const CachedFrame* centerFrame = nullptr;
-  const OfxStatus centerStatus = getFrame(time, &centerFrame);
-  if (centerStatus != kOfxStatOK || !centerFrame) {
-    frames.clear();
-    return centerStatus;
-  }
-  frames[centerIndex] = centerFrame;
-
-  for (int offset = -before; offset <= after; ++offset) {
-    if (offset == 0) {
-      continue;
-    }
-    const size_t index = static_cast<size_t>(offset + before);
-    const CachedFrame* frame = nullptr;
-    const OfxStatus status = getFrameOffset(time, offset, &frame);
-    if (status == kOfxStatOK && frame) {
-      frames[index] = frame;
-      continue;
-    }
-
-    // Explicit edge policy: preserve the requested window shape by repeating
-    // the central frame. This is only used for an unavailable temporal
-    // neighbor; a missing center frame remains a hard render error.
-    frames[index] = centerFrame;
     if (debug_) {
       std::ostringstream stream;
-      stream << "temporal edge fallback requestedTime="
-             << (time + static_cast<OfxTime>(offset))
-             << " usingCenterTime=" << centerFrame->time
-             << " status=" << status;
-      debugMessage("[RifeOFX] " + stream.str());
+      stream << std::fixed << std::setprecision(6)
+             << "clipGetImage requestedTime=" << time << " source=cache";
+      debugLog(stream.str());
     }
+    return kOfxStatOK;
   }
-  return kOfxStatOK;
+  return loadFrame(time, frame);
 }
 
 OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
                                             const CachedFrame** frame) {
   OfxPropertySetHandle image = nullptr;
-  OfxStatus status = imageEffectSuite_->clipGetImage(sourceClip_, time, nullptr, &image);
-  debugLog("clipGetImage", time, status);
+  const OfxStatus status =
+      imageEffectSuite_->clipGetImage(sourceClip_, time, nullptr, &image);
   if (status != kOfxStatOK || !image) {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(6)
+           << "clipGetImage requestedTime=" << time << " status=" << status
+           << " image=null";
+    debugLog(stream.str());
+    appendTemporalLog(stream.str());
     return status == kOfxStatOK ? kOfxStatFailed : status;
   }
 
@@ -165,8 +90,27 @@ OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
                               bounds.x2 > bounds.x1 && bounds.y2 > bounds.y1;
   if (!expectedFormat) {
     imageEffectSuite_->clipReleaseImage(image);
-    debugLog("clipGetImage(format rejected)", time, kOfxStatErrImageFormat);
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(6)
+           << "clipGetImage requestedTime=" << time
+           << " rejected: components=" << (components ? components : "null")
+           << " depth=" << (depth ? depth : "null");
+    debugLog(stream.str());
+    appendTemporalLog(stream.str());
     return kOfxStatErrImageFormat;
+  }
+
+  if (debug_) {
+    // The host does not report which frame it decided to hand back, so the
+    // requested time and the geometry are logged together with the caller's
+    // signature to make a conformed repeat visible.
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(6)
+           << "clipGetImage requestedTime=" << time << " status=" << status
+           << " bounds=[" << bounds.x1 << "," << bounds.y1 << "," << bounds.x2
+           << "," << bounds.y2 << "] rowBytes=" << rowBytes;
+    debugLog(stream.str());
+    appendTemporalLog(stream.str());
   }
 
   CachedFrame loaded;

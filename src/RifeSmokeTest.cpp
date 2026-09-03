@@ -3,9 +3,11 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -32,6 +34,18 @@ rifeofx::CachedFrame makeTestFrame(int squareX) {
     }
   }
   return frame;
+}
+
+double meanAbsoluteDifference(const std::vector<float>& first,
+                             const std::vector<float>& second) {
+  if (first.size() != second.size() || first.empty()) {
+    return 0.0;
+  }
+  double sum = 0.0;
+  for (size_t index = 0; index < first.size(); ++index) {
+    sum += std::abs(static_cast<double>(first[index] - second[index]));
+  }
+  return sum / static_cast<double>(first.size());
 }
 
 }  // namespace
@@ -63,16 +77,28 @@ int wmain(int argc, wchar_t** argv) {
   }
   const rifeofx::CachedFrame frameA = makeTestFrame(8);
   const rifeofx::CachedFrame frameB = makeTestFrame(24);
-  std::vector<float> output;
+  std::vector<float> earlyOutput;
+  std::vector<float> lateOutput;
   rifeofx::InferenceDiagnostics diagnostics;
 
   std::wcerr << L"Starting RIFE Vulkan smoke test...\n";
-  const OfxStatus status = engine.interpolate(frameA, frameB, 0.5f, output,
-                                               &diagnostics);
-  std::wcerr << L"RIFE status=" << status << L", output floats=" << output.size()
+  const OfxStatus earlyStatus = engine.interpolate(frameA, frameB, 1.0f / 6.0f,
+                                                    earlyOutput, &diagnostics);
+  const OfxStatus lateStatus = engine.interpolate(frameA, frameB, 5.0f / 6.0f,
+                                                   lateOutput, &diagnostics);
+  const double temporalDifference =
+      meanAbsoluteDifference(earlyOutput, lateOutput);
+  std::wcerr << L"RIFE status=" << earlyStatus << L"/" << lateStatus
+             << L", output floats=" << earlyOutput.size()
              << L", model=" << diagnostics.modelId.c_str()
              << L", padded=" << diagnostics.paddedWidth << L"x"
              << diagnostics.paddedHeight << L", inferenceMs="
-             << diagnostics.inferenceMilliseconds << L"\n";
-  return status == kOfxStatOK ? 0 : 1;
+             << diagnostics.inferenceMilliseconds
+             << L", temporalDifference=" << temporalDifference << L"\n";
+  if (earlyStatus != kOfxStatOK || lateStatus != kOfxStatOK ||
+      earlyOutput.empty() || temporalDifference <= 1.0e-6) {
+    std::wcerr << L"RIFE did not produce distinct frames for distinct timesteps.\n";
+    return 1;
+  }
+  return 0;
 }
