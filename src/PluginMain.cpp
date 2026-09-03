@@ -30,6 +30,10 @@
 namespace {
 
 constexpr char kPluginIdentifier[] = "com.rifeofx.RifeFrameInterpolator";
+// Compiled into the binary so the log says which build Resolve actually loaded.
+// Rebuilding without reinstalling the bundle is otherwise invisible, and costs a
+// whole test session chasing a bug that is already fixed.
+constexpr char kPluginBuildStamp[] = __DATE__ " " __TIME__;
 constexpr int kPluginMajor = 0;
 constexpr int kPluginMinor = 1;
 constexpr char kEnabledParam[] = "enabled";
@@ -334,15 +338,18 @@ void seedUntouchedDoubleParam(OfxParamHandle parameter, double value,
   }
 
   std::ostringstream stream;
+  stream << label << " current=" << current << " default=" << declaredDefault
+         << " hostReported=" << value << " -> ";
   if (std::abs(current - declaredDefault) > 1e-9) {
-    stream << label << " kept at the stored value=" << current
-           << " (host reported " << value << ")";
+    stream << "kept (user value)";
     rifeofx::debugLog(stream.str());
+    rifeofx::appendTemporalLog(stream.str());
     return;
   }
   const OfxStatus status = gParameterSuite->paramSetValue(parameter, value);
-  stream << label << " seeded from the host=" << value << " status=" << status;
+  stream << "seeded, status=" << status;
   rifeofx::debugLog(stream.str());
+  rifeofx::appendTemporalLog(stream.str());
 }
 
 void setParameterEnabled(OfxParamHandle parameter, bool enabled) {
@@ -945,6 +952,9 @@ OfxStatus describe(OfxImageEffectHandle effect) {
   if (status != kOfxStatOK) {
     return status;
   }
+
+  rifeofx::debugLog(std::string("plugin build=") + kPluginBuildStamp);
+  rifeofx::appendTemporalLog(std::string("plugin build=") + kPluginBuildStamp);
 
   setString(effectProps, kOfxPropLabel, 0, "RIFE Frame Interpolator");
   setString(effectProps, kOfxImageEffectPluginPropGrouping, 0, "Open Source AI");
