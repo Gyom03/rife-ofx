@@ -55,8 +55,8 @@ OfxStatus TemporalFrameProvider::getFrame(OfxTime time,
   return loadFrame(time, frame);
 }
 
-OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
-                                            const CachedFrame** frame) {
+OfxStatus TemporalFrameProvider::readImage(OfxTime time, CachedFrame* loaded,
+                                            bool logOnSuccess) {
   OfxPropertySetHandle image = nullptr;
   const OfxStatus status =
       imageEffectSuite_->clipGetImage(sourceClip_, time, nullptr, &image);
@@ -100,7 +100,7 @@ OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
     return kOfxStatErrImageFormat;
   }
 
-  if (debug_) {
+  if (debug_ && logOnSuccess) {
     // The host does not report which frame it decided to hand back, so the
     // requested time and the geometry are logged together with the caller's
     // signature to make a conformed repeat visible.
@@ -113,24 +113,34 @@ OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
     appendTemporalLog(stream.str());
   }
 
-  CachedFrame loaded;
-  loaded.time = time;
-  loaded.bounds = bounds;
-  loaded.rowBytes = (bounds.x2 - bounds.x1) * kRGBAChannels * static_cast<int>(sizeof(float));
-  loaded.rgba.resize(static_cast<size_t>(bounds.y2 - bounds.y1) *
-                     static_cast<size_t>(bounds.x2 - bounds.x1) * kRGBAChannels);
+  loaded->time = time;
+  loaded->bounds = bounds;
+  loaded->rowBytes = (bounds.x2 - bounds.x1) * kRGBAChannels * static_cast<int>(sizeof(float));
+  loaded->rgba.resize(static_cast<size_t>(bounds.y2 - bounds.y1) *
+                      static_cast<size_t>(bounds.x2 - bounds.x1) * kRGBAChannels);
 
   const int width = bounds.x2 - bounds.x1;
-  const size_t copyBytes = static_cast<size_t>(loaded.rowBytes);
+  const size_t copyBytes = static_cast<size_t>(loaded->rowBytes);
   for (int y = bounds.y1; y < bounds.y2; ++y) {
     const auto* sourceRow = static_cast<const unsigned char*>(imageData) +
                             (y - bounds.y1) * rowBytes;
-    auto* destinationRow = loaded.rgba.data() +
+    auto* destinationRow = loaded->rgba.data() +
                            static_cast<size_t>(y - bounds.y1) * width * kRGBAChannels;
     std::memcpy(destinationRow, sourceRow, copyBytes);
   }
 
   imageEffectSuite_->clipReleaseImage(image);
+  return kOfxStatOK;
+}
+
+OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
+                                            const CachedFrame** frame) {
+  CachedFrame loaded;
+  const OfxStatus status = readImage(time, &loaded, true);
+  if (status != kOfxStatOK) {
+    return status;
+  }
+
   auto inserted = cache_.emplace(
       time, std::make_shared<CachedFrame>(std::move(loaded)));
   while (cache_.size() > kMaxCachedFrames) {
@@ -145,6 +155,20 @@ OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
   }
   activeFrameRefs_.push_back(inserted.first->second);
   *frame = inserted.first->second.get();
+  return kOfxStatOK;
+}
+
+OfxStatus TemporalFrameProvider::signatureAt(OfxTime time,
+                                              std::uint64_t* signature) {
+  if (!signature || !propertySuite_ || !imageEffectSuite_ || !sourceClip_) {
+    return kOfxStatErrBadHandle;
+  }
+  CachedFrame probe;
+  const OfxStatus status = readImage(time, &probe, false);
+  if (status != kOfxStatOK) {
+    return status;
+  }
+  *signature = sampledSignature(probe.rgba.data(), probe.rgba.size());
   return kOfxStatOK;
 }
 

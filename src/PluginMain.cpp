@@ -697,6 +697,45 @@ void probeRenderTimeAddressing(InstanceData* data, OfxTime renderTime,
   rifeofx::appendTemporalLog(stream.str());
 }
 
+// Once per instance: label a run of consecutive render times by the first time
+// that produced each image. A host that conformed the media to the timeline
+// cadence repeats one image per cycle, so the pattern shows both that fact and
+// its phase, which is what decides whether the original frames are reachable at
+// all and at which times.
+void probeInputCadence(InstanceData* data, OfxTime renderTime) {
+  constexpr int kProbeLength = 13;
+  std::vector<std::uint64_t> signatures;
+  signatures.reserve(kProbeLength);
+
+  std::ostringstream pattern;
+  int distinct = 0;
+  for (int offset = 0; offset < kProbeLength; ++offset) {
+    std::uint64_t signature = 0;
+    if (data->temporalProvider->signatureAt(renderTime + offset, &signature) !=
+        kOfxStatOK) {
+      pattern << '?';
+      signatures.push_back(0);
+      continue;
+    }
+    std::size_t first = 0;
+    while (first < signatures.size() && signatures[first] != signature) {
+      ++first;
+    }
+    if (first == signatures.size()) {
+      ++distinct;
+    }
+    signatures.push_back(signature);
+    pattern << static_cast<char>('A' + static_cast<int>(first % 26));
+  }
+
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(3)
+         << "cadenceProbe from=" << renderTime << " length=" << kProbeLength
+         << " pattern=" << pattern.str() << " distinct=" << distinct;
+  rifeofx::debugLog(stream.str());
+  rifeofx::appendTemporalLog(stream.str());
+}
+
 // The only entry point into the inference engine. Kept separate from the OFX
 // plumbing so additional models or interpolation strategies plug in here.
 OfxStatus runRifeInterpolation(InstanceData* data, OfxTime time,
@@ -1422,6 +1461,7 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
   if (debug && !data->renderTimeProbeDone) {
     data->renderTimeProbeDone = true;
     probeRenderTimeAddressing(data, time, mapping, inputs);
+    probeInputCadence(data, time);
   }
 
   OfxPropertySetHandle outputImage = nullptr;
