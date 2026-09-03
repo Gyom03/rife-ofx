@@ -127,7 +127,17 @@ Et, une seule fois par instance, la mesure qui tranche la question de l'axe :
 
 ```text
 [RifeOFX] renderTimeProbe requestedTime=6816.000000 status=0 addressable=1 signature=0x... matchesMappedFrameA=0 mappedTimeA=6811.000000
+[RifeOFX] cadenceProbe from=6384.000 length=13 pattern=AABCDEFFGHIJK distinct=11
 ```
+
+`cadenceProbe` etiquette treize temps de rendu consecutifs par la premiere
+occurrence de chaque image :
+
+- `ABCDEFGHIJKLM`, `distinct=13` : chaque frame de la timeline porte une image
+  differente, l'entree n'est pas conformee ;
+- `AABCDEFFGHIJK`, `distinct=11` : une image est repetee tous les six temps.
+  L'hote a conforme le media 50 -> 60 avant que l'effet ne le voie, et la
+  position de la repetition donne la phase du conform.
 
 ## 6. Ancrage temporel
 
