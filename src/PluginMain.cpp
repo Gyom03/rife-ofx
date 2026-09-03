@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <cmath>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -138,6 +139,8 @@ struct InstanceData {
   // One-shot diagnostics, run on the first render that has Debug enabled.
   bool firstRenderLogged = false;
   bool renderTimeProbeDone = false;
+  std::map<OfxTime, std::uint64_t> cadenceSamples;
+  bool cadenceReported = false;
   // TemporalFrameProvider owns mutable cache state and returns pointers into
   // it. Serialize render calls for this instance while preserving parallelism
   // between independent effect instances.
@@ -308,6 +311,38 @@ rifeofx::SourceTimeBase getSourceTimeBase(const InstanceData* data, OfxTime time
       getChoiceParam(data ? data->sourceTimeBaseParam : nullptr, time, 0);
   return selected == 1 ? rifeofx::SourceTimeBase::kTimelineFrames
                        : rifeofx::SourceTimeBase::kSourceFrames;
+}
+
+// Seeds a control from a host-reported value, but only while it still holds its
+// declared default. Writing unconditionally on every createInstance silently
+// undoes a manual Source Framerate every time the project is reopened, because
+// the host restores the saved value and the plugin immediately overwrites it.
+void seedUntouchedDoubleParam(OfxParamHandle parameter, double value,
+                              const char* label) {
+  if (!parameter || !(value > 0.0)) {
+    return;
+  }
+  OfxPropertySetHandle properties = nullptr;
+  double declaredDefault = 0.0;
+  double current = 0.0;
+  if (gParameterSuite->paramGetPropertySet(parameter, &properties) != kOfxStatOK ||
+      !properties ||
+      gPropertySuite->propGetDouble(properties, kOfxParamPropDefault, 0,
+                                    &declaredDefault) != kOfxStatOK ||
+      gParameterSuite->paramGetValue(parameter, &current) != kOfxStatOK) {
+    return;
+  }
+
+  std::ostringstream stream;
+  if (std::abs(current - declaredDefault) > 1e-9) {
+    stream << label << " kept at the stored value=" << current
+           << " (host reported " << value << ")";
+    rifeofx::debugLog(stream.str());
+    return;
+  }
+  const OfxStatus status = gParameterSuite->paramSetValue(parameter, value);
+  stream << label << " seeded from the host=" << value << " status=" << status;
+  rifeofx::debugLog(stream.str());
 }
 
 void setParameterEnabled(OfxParamHandle parameter, bool enabled) {
@@ -597,6 +632,15 @@ rifeofx::TemporalMapping buildTemporalMapping(const InstanceData* data,
   return rifeofx::computeTemporalMapping(inputs);
 }
 
+// The single place deciding which source images an output frame consumes, so
+// getFramesNeeded announces exactly what fetchTemporalInputs will request. A
+// fetch the host was not told about is outside the OpenFX contract, and Resolve
+// does not answer those requests the same way it answers declared ones.
+bool requiresFrameB(const rifeofx::TemporalMapping& mapping) {
+  return !mapping.singleImage() &&
+         mapping.policy != rifeofx::BlendPolicy::kHoldA;
+}
+
 struct TemporalInputs {
   const rifeofx::CachedFrame* frameA = nullptr;
   const rifeofx::CachedFrame* frameB = nullptr;
@@ -639,7 +683,7 @@ OfxStatus fetchTemporalInputs(InstanceData* data,
   }
 
   inputs->frameB = inputs->frameA;
-  if (!mapping.singleImage()) {
+  if (requiresFrameB(mapping)) {
     if (debug) {
       std::ostringstream stream;
       stream << std::fixed << std::setprecision(6)
@@ -783,43 +827,65 @@ void logRetimerProbe(InstanceData* data, OfxTime outputTime) {
   }
 }
 
-// Once per instance: label a run of consecutive render times by the first time
-// that produced each image. A host that conformed the media to the timeline
-// cadence repeats one image per cycle, so the pattern shows both that fact and
-// its phase, which is what decides whether the original frames are reachable at
-// all and at which times.
-void probeInputCadence(InstanceData* data, OfxTime renderTime) {
-  constexpr int kProbeLength = 13;
-  std::vector<std::uint64_t> signatures;
-  signatures.reserve(kProbeLength);
+// Cadence is measured from the images the render path actually received, not
+// from extra reads outside the range announced in getFramesNeeded: the host does
+// not answer undeclared requests the same way, so a probe built on them
+// disagreed with the frames the effect was really given.
+//
+// Each render time is labelled by the first time that produced its image. A run
+// of distinct labels means one image per timeline frame; a repeat every sixth
+// label means the host resampled the media, and the position of the repeat is
+// the phase of that conform.
+constexpr int kCadenceRunLength = 13;
+constexpr std::size_t kCadenceMaxSamples = 256;
+
+void recordCadenceSample(InstanceData* data, OfxTime time,
+                         std::uint64_t signature) {
+  if (data->cadenceReported) {
+    return;
+  }
+  data->cadenceSamples[time] = signature;
+  while (data->cadenceSamples.size() > kCadenceMaxSamples) {
+    data->cadenceSamples.erase(data->cadenceSamples.begin());
+  }
+
+  // Longest prefix of consecutive integer times, restarting on every gap.
+  std::vector<std::pair<OfxTime, std::uint64_t>> run;
+  for (const auto& sample : data->cadenceSamples) {
+    if (!run.empty() &&
+        std::abs(sample.first - run.back().first - 1.0) > 1e-6) {
+      run.clear();
+    }
+    run.push_back(sample);
+    if (static_cast<int>(run.size()) >= kCadenceRunLength) {
+      break;
+    }
+  }
+  if (static_cast<int>(run.size()) < kCadenceRunLength) {
+    return;
+  }
 
   std::ostringstream pattern;
-  int distinct = 0;
-  for (int offset = 0; offset < kProbeLength; ++offset) {
-    std::uint64_t signature = 0;
-    if (data->temporalProvider->signatureAt(renderTime + offset, &signature) !=
-        kOfxStatOK) {
-      pattern << '?';
-      signatures.push_back(0);
-      continue;
-    }
+  std::vector<std::uint64_t> seen;
+  for (const auto& sample : run) {
     std::size_t first = 0;
-    while (first < signatures.size() && signatures[first] != signature) {
+    while (first < seen.size() && seen[first] != sample.second) {
       ++first;
     }
-    if (first == signatures.size()) {
-      ++distinct;
+    if (first == seen.size()) {
+      seen.push_back(sample.second);
     }
-    signatures.push_back(signature);
     pattern << static_cast<char>('A' + static_cast<int>(first % 26));
   }
 
   std::ostringstream stream;
   stream << std::fixed << std::setprecision(3)
-         << "cadenceProbe from=" << renderTime << " length=" << kProbeLength
-         << " pattern=" << pattern.str() << " distinct=" << distinct;
+         << "cadenceProbe source=renderPath from=" << run.front().first
+         << " length=" << run.size() << " pattern=" << pattern.str()
+         << " distinct=" << seen.size();
   rifeofx::debugLog(stream.str());
   rifeofx::appendTemporalLog(stream.str());
+  data->cadenceReported = true;
 }
 
 // The only entry point into the inference engine. Kept separate from the OFX
@@ -1320,22 +1386,12 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
              << " status=" << setStatus;
       rifeofx::debugLog(stream.str());
     }
-    if (data->timing.sourceFrameRate > 0.0 && data->sourceFrameRateParam) {
-      const OfxStatus setStatus = gParameterSuite->paramSetValue(
-          data->sourceFrameRateParam, data->timing.sourceFrameRate);
-      std::ostringstream stream;
-      stream << "set source frame rate default=" << data->timing.sourceFrameRate
-             << " status=" << setStatus;
-      rifeofx::debugLog(stream.str());
-    }
-    if (data->timing.outputFrameRate > 0.0 && data->targetFrameRateParam) {
-      const OfxStatus setStatus = gParameterSuite->paramSetValue(
-          data->targetFrameRateParam, data->timing.outputFrameRate);
-      std::ostringstream stream;
-      stream << "set target frame rate=" << data->timing.outputFrameRate
-             << " status=" << setStatus;
-      rifeofx::debugLog(stream.str());
-    }
+    // These two carry user intent and are restored from the project, so they
+    // are only seeded while untouched.
+    seedUntouchedDoubleParam(data->sourceFrameRateParam,
+                             data->timing.sourceFrameRate, "source frame rate");
+    seedUntouchedDoubleParam(data->targetFrameRateParam,
+                             data->timing.outputFrameRate, "target frame rate");
 
     // The anchor depends on the render time, so it cannot be resolved here.
     // The first render logs the one it actually used.
@@ -1517,10 +1573,8 @@ OfxStatus getFramesNeeded(OfxImageEffectHandle effect,
   // continuous range. Under the default Source Frames time base these are the
   // integral media frames that bracket the source position.
   double sourceRange[2] = {mapping.sourceTimeA, mapping.sourceTimeB};
-  if (thumbnailRender || mapping.policy == rifeofx::BlendPolicy::kHoldA) {
+  if (!requiresFrameB(mapping)) {
     sourceRange[1] = sourceRange[0];
-  } else if (mapping.policy == rifeofx::BlendPolicy::kHoldB) {
-    sourceRange[0] = sourceRange[1];
   }
 
   const OfxStatus status = gPropertySuite->propSetDoubleN(
@@ -1588,11 +1642,11 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
            << " identicalImages=" << (inputs.identicalImages ? 1 : 0);
     rifeofx::debugLog(stream.str());
     rifeofx::appendTemporalLog(stream.str());
+    recordCadenceSample(data, mapping.sourceTimeA, inputs.signatureA);
   }
   if (debug && !data->renderTimeProbeDone) {
     data->renderTimeProbeDone = true;
     probeRenderTimeAddressing(data, time, mapping, inputs);
-    probeInputCadence(data, time);
   }
 
   OfxPropertySetHandle outputImage = nullptr;

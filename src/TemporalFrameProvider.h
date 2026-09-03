@@ -34,12 +34,6 @@ class TemporalFrameProvider {
   void beginOutputFrame();
   OfxStatus getFrame(OfxTime time, const CachedFrame** frame);
 
-  // Fetches an image only to fingerprint it. It never enters the cache, so a
-  // long diagnostic run neither evicts the frames the current render is using
-  // nor holds a dozen full images in memory at once. The value is comparable
-  // with the signatures reported for the rendered frames.
-  OfxStatus signatureAt(OfxTime time, std::uint64_t* signature);
-
   void setDebug(bool debug) { debug_ = debug; }
   void clear();
 

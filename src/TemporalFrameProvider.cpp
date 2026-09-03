@@ -158,20 +158,6 @@ OfxStatus TemporalFrameProvider::loadFrame(OfxTime time,
   return kOfxStatOK;
 }
 
-OfxStatus TemporalFrameProvider::signatureAt(OfxTime time,
-                                              std::uint64_t* signature) {
-  if (!signature || !propertySuite_ || !imageEffectSuite_ || !sourceClip_) {
-    return kOfxStatErrBadHandle;
-  }
-  CachedFrame probe;
-  const OfxStatus status = readImage(time, &probe, false);
-  if (status != kOfxStatOK) {
-    return status;
-  }
-  *signature = sampledSignature(probe.rgba.data(), probe.rgba.size());
-  return kOfxStatOK;
-}
-
 void TemporalFrameProvider::clear() {
   cache_.clear();
   activeFrameRefs_.clear();
