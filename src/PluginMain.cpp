@@ -42,7 +42,6 @@ constexpr char kDetectedFrameRateParam[] = "detectedFrameRate";
 constexpr char kSourceFrameRateParam[] = "sourceFrameRate";
 constexpr char kUseTimelineFrameRateParam[] = "useTimelineFrameRate";
 constexpr char kTargetFrameRateParam[] = "targetFrameRate";
-constexpr char kSourceTimeBaseParam[] = "sourceTimeBase";
 constexpr char kPhaseOverrideParam[] = "phaseOverride";
 constexpr char kModeParam[] = "mode";
 constexpr char kQualityParam[] = "quality";
@@ -124,7 +123,6 @@ struct InstanceData {
   OfxParamHandle sourceFrameRateParam = nullptr;
   OfxParamHandle useTimelineFrameRateParam = nullptr;
   OfxParamHandle targetFrameRateParam = nullptr;
-  OfxParamHandle sourceTimeBaseParam = nullptr;
   OfxParamHandle phaseOverrideParam = nullptr;
   OfxParamHandle modeParam = nullptr;
   OfxParamHandle qualityParam = nullptr;
@@ -316,21 +314,6 @@ int getChoiceParam(OfxParamHandle parameter, OfxTime time, int fallback) {
     return fallback;
   }
   return value;
-}
-
-constexpr int kTimeBaseSourceFrames = 0;
-constexpr int kTimeBaseTimelineFrames = 1;
-constexpr int kTimeBaseConformedCadence = 2;
-
-int getTimeBaseChoice(const InstanceData* data, OfxTime time) {
-  return getChoiceParam(data ? data->sourceTimeBaseParam : nullptr, time,
-                        kTimeBaseConformedCadence);
-}
-
-rifeofx::SourceTimeBase getSourceTimeBase(const InstanceData* data, OfxTime time) {
-  return getTimeBaseChoice(data, time) == kTimeBaseTimelineFrames
-             ? rifeofx::SourceTimeBase::kTimelineFrames
-             : rifeofx::SourceTimeBase::kSourceFrames;
 }
 
 std::int64_t getPhaseOverride(const InstanceData* data, OfxTime time) {
@@ -578,59 +561,6 @@ void logClipTiming(const InstanceData* data) {
   rifeofx::appendTemporalLog(stream.str());
 }
 
-struct TemporalAnchor {
-  // OfxTime that corresponds to source position 0, i.e. where the clip starts
-  // on the axis the host uses for kOfxPropTime.
-  OfxTime origin = 0.0;
-  bool clampToSourceRange = false;
-  bool resolved = false;
-  const char* reason = "unresolved";
-};
-
-// Resolve reports render times on a composition-global axis (observed:
-// outputTime=6816) while the Source clip range can be media-local (0..1999).
-// A range from a different axis must never be used to locate the clip or to
-// clamp a request: doing so pins every render to the same frame.
-//
-// The test is the render time itself, not a derived value: a range is only
-// usable when kOfxPropTime actually falls inside it.
-TemporalAnchor resolveTemporalAnchor(const ClipTimingInfo& timing,
-                                     OfxTime outputTime) {
-  constexpr double kTolerance = 0.5;
-  TemporalAnchor anchor;
-
-  if (timing.sourceRangeAvailable &&
-      outputTime >= timing.sourceFirstFrame - kTolerance &&
-      outputTime <= timing.sourceLastFrame + kTolerance) {
-    anchor.origin = timing.sourceFirstFrame;
-    anchor.clampToSourceRange = true;
-    anchor.resolved = true;
-    anchor.reason = "sourceFrameRange";
-    return anchor;
-  }
-
-  if (timing.outputRangeAvailable &&
-      outputTime >= timing.outputFirstFrame - kTolerance &&
-      outputTime <= timing.outputLastFrame + kTolerance) {
-    // The clip is located on the output axis, but the source range belongs to
-    // another axis, so it cannot bound the request.
-    anchor.origin = timing.outputFirstFrame;
-    anchor.clampToSourceRange = false;
-    anchor.resolved = true;
-    anchor.reason = "outputFrameRange";
-    return anchor;
-  }
-
-  // Nothing the host reported locates this clip on the render axis. Anchoring
-  // at the render time degrades to a passthrough instead of confidently asking
-  // for a source frame hundreds of frames away from the playhead.
-  anchor.origin = outputTime;
-  anchor.clampToSourceRange = false;
-  anchor.resolved = false;
-  anchor.reason = "unresolved (render time outside every reported range)";
-  return anchor;
-}
-
 // Keeps the calibrator configured from the rates currently in effect. Changing
 // either rate invalidates a measured phase, because the cycle itself changes.
 void refreshCalibratorConfiguration(InstanceData* data, OfxTime time) {
@@ -695,10 +625,9 @@ rifeofx::TemporalMapping cadenceToTemporalMapping(
   mapping.sourceTimeA = static_cast<OfxTime>(cadence.timelineTimeA);
   mapping.sourceTimeB = static_cast<OfxTime>(cadence.timelineTimeB);
   mapping.timestep = cadence.timestep;
-  mapping.timeBase = rifeofx::SourceTimeBase::kSourceFrames;
   mapping.ratesValid = true;
-  mapping.anchorResolved = true;
-  mapping.anchorReason = "conformedCadence";
+  mapping.resolved = true;
+  mapping.reason = "conformedCadence";
 
   if (cadence.timestep <= holdEpsilon) {
     mapping.timestep = 0.0f;
@@ -730,68 +659,44 @@ rifeofx::TemporalMapping passthroughMapping(OfxTime outputTime,
   mapping.timestep = 0.0f;
   mapping.policy = rifeofx::BlendPolicy::kHoldA;
   mapping.timelineOrigin = outputTime;
-  mapping.anchorResolved = false;
-  mapping.anchorReason = reason;
+  mapping.resolved = false;
+  mapping.reason = reason;
   return mapping;
 }
 
 // Output time -> position in the original media -> the two source frames that
-// bracket it. This is the single place the mapping is decided; render and
+// carry it. This is the single place the mapping is decided; render and
 // getFramesNeeded both go through it so they can never disagree.
 rifeofx::TemporalMapping buildTemporalMapping(const InstanceData* data,
                                               OfxTime outputTime) {
   const double sourceFrameRate = getSourceFrameRate(data, outputTime);
   const double outputFrameRate = getTargetFrameRate(data, outputTime);
-
-  if (data && getTimeBaseChoice(data, outputTime) == kTimeBaseConformedCadence) {
-    switch (data->calibrator.state()) {
-      case rifeofx::CalibrationState::kCalibrated:
-        return cadenceToTemporalMapping(
-            rifeofx::computeCadenceMapping(
-                static_cast<std::int64_t>(std::llround(outputTime)),
-                data->calibrator.phase(), data->calibrator.ratio()),
-            sourceFrameRate, outputFrameRate, outputTime, 1e-4);
-      case rifeofx::CalibrationState::kPending:
-        // Hold at the render time while the phase is still being measured. That
-        // is also exactly the frame the calibrator needs to observe next.
-        return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
-                                  "calibrating");
-      case rifeofx::CalibrationState::kAmbiguous:
-        return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
-                                  "calibration ambiguous");
-      case rifeofx::CalibrationState::kNotApplicable:
-        return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
-                                  "no host conform to undo");
-    }
+  if (!data) {
+    return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
+                              "no instance data");
   }
 
-  rifeofx::TemporalMappingInputs inputs;
-  inputs.outputTime = outputTime;
-  inputs.sourceFrameRate = sourceFrameRate;
-  inputs.outputFrameRate = outputFrameRate;
-  inputs.timeBase = getSourceTimeBase(data, outputTime);
-  if (data) {
-    const TemporalAnchor anchor = resolveTemporalAnchor(data->timing, outputTime);
-    inputs.timelineOrigin = anchor.origin;
-    inputs.anchorResolved = anchor.resolved;
-    inputs.anchorReason = anchor.reason;
-    inputs.clampToSourceRange = anchor.clampToSourceRange;
-    inputs.sourceFirstFrame = data->timing.sourceFirstFrame;
-    inputs.sourceLastFrame = data->timing.sourceLastFrame;
+  switch (data->calibrator.state()) {
+    case rifeofx::CalibrationState::kCalibrated:
+      return cadenceToTemporalMapping(
+          rifeofx::computeCadenceMapping(
+              static_cast<std::int64_t>(std::llround(outputTime)),
+              data->calibrator.phase(), data->calibrator.ratio()),
+          sourceFrameRate, outputFrameRate, outputTime, 1e-4);
+    case rifeofx::CalibrationState::kPending:
+      // Hold at the render time while the phase is still being measured. That
+      // is also exactly the frame the calibrator needs to observe next.
+      return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
+                                "calibrating");
+    case rifeofx::CalibrationState::kAmbiguous:
+      return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
+                                "calibration ambiguous");
+    case rifeofx::CalibrationState::kNotApplicable:
+      return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
+                                "no host conform to undo");
   }
-
-  // In the OpenFX retimer context the host owns the mapping and publishes it
-  // through the mandated SourceTime parameter, expressed in source frames.
-  if (data && data->retimerContext && data->sourceTimeParam) {
-    double hostSourceTime = 0.0;
-    if (gParameterSuite->paramGetValueAtTime(data->sourceTimeParam, outputTime,
-                                             &hostSourceTime) == kOfxStatOK) {
-      inputs.hostSourcePositionValid = true;
-      inputs.hostSourcePosition = hostSourceTime;
-    }
-  }
-
-  return rifeofx::computeTemporalMapping(inputs);
+  return passthroughMapping(outputTime, sourceFrameRate, outputFrameRate,
+                            "unknown calibration state");
 }
 
 // The single place deciding which source images an output frame consumes, so
@@ -1392,26 +1297,6 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
   setInt(paramProps, kOfxParamPropEnabled, 0, 0);
   setInt(paramProps, kOfxParamPropAnimates, 0, 0);
 
-  status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeChoice,
-                                        kSourceTimeBaseParam, &paramProps);
-  if (status != kOfxStatOK) {
-    return status;
-  }
-  setString(paramProps, kOfxPropLabel, 0, "Source Time Base");
-  setString(paramProps, kOfxParamPropScriptName, 0, kSourceTimeBaseParam);
-  setString(paramProps, kOfxParamPropHint, 0,
-            "How a source frame index is converted into the time passed to the host. "
-            "Source Frames is the OpenFX convention: one time unit per media frame. "
-            "Timeline Frames is for a host that resamples the input onto the output "
-            "cadence before the effect sees it.");
-  setString(paramProps, kOfxParamPropChoiceOption, 0, "Source Frames (OFX standard)");
-  setString(paramProps, kOfxParamPropChoiceOption, 1, "Timeline Frames (host conformed)");
-  setString(paramProps, kOfxParamPropChoiceOption, 2, "Conformed Cadence (auto phase)");
-  // The measured reality on this host: the input is already resampled onto the
-  // timeline. Existing projects keep whatever they stored.
-  setInt(paramProps, kOfxParamPropDefault, 0, 2);
-  setInt(paramProps, kOfxParamPropAnimates, 0, 0);
-
   status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeInteger,
                                         kPhaseOverrideParam, &paramProps);
   if (status != kOfxStatOK) {
@@ -1548,10 +1433,6 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
   if (status == kOfxStatOK) {
     status = fetchOptionalParam(paramSet, kTargetFrameRateParam,
                                 &data->targetFrameRateParam);
-  }
-  if (status == kOfxStatOK) {
-    status = fetchOptionalParam(paramSet, kSourceTimeBaseParam,
-                                &data->sourceTimeBaseParam);
   }
   if (status == kOfxStatOK) {
     status = fetchOptionalParam(paramSet, kPhaseOverrideParam,
@@ -1700,8 +1581,7 @@ OfxStatus instanceChanged(OfxImageEffectHandle effect,
   } else if (changedName &&
              (std::strcmp(changedName, kSourceFrameRateParam) == 0 ||
               std::strcmp(changedName, kTargetFrameRateParam) == 0 ||
-              std::strcmp(changedName, kUseTimelineFrameRateParam) == 0 ||
-              std::strcmp(changedName, kSourceTimeBaseParam) == 0)) {
+              std::strcmp(changedName, kUseTimelineFrameRateParam) == 0)) {
     // The cache is keyed by the requested time; a changed mapping asks for a
     // different set of times, so stale entries would never be hit anyway. It is
     // cleared to keep memory bounded during interactive tuning.
@@ -1855,14 +1735,10 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
 
   // The cadence ratio follows the rates currently in effect; a phase measured
   // for a different cycle would be meaningless.
-  const bool cadenceMode = getTimeBaseChoice(data, time) == kTimeBaseConformedCadence;
-  if (cadenceMode) {
-    refreshCalibratorConfiguration(data, time);
-  }
+  refreshCalibratorConfiguration(data, time);
   // Image comparison happens only while a phase is still being measured. Once
   // calibrated, the mapping is arithmetic and no signature is needed for it.
   const bool calibrating =
-      cadenceMode &&
       data->calibrator.state() == rifeofx::CalibrationState::kPending;
   if (debug && !data->firstRenderLogged) {
     // Debug is usually switched on after the instance exists, so the timing
@@ -1872,12 +1748,9 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
   }
 
   // 1. output time -> source position -> the two bracketing source frames.
+  // The record for this frame is emitted below by logCadenceRender, once the
+  // images are in hand and their signatures are known.
   const rifeofx::TemporalMapping mapping = buildTemporalMapping(data, time);
-  if (debug) {
-    const std::string record = rifeofx::formatTemporalMapping(mapping);
-    rifeofx::debugLogBlock(record);
-    rifeofx::appendTemporalLog(record);
-  }
 
   // 2. explicit temporal reads at those two times.
   TemporalInputs inputs;
@@ -1897,7 +1770,7 @@ OfxStatus render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs) {
       logCalibration(data, true);
     }
   }
-  if (cadenceMode && debug) {
+  if (debug) {
     logCadenceRender(data, time, mapping, inputs, renderScale[0], renderScale[1]);
   }
   if (debug && inputs.signaturesComputed) {

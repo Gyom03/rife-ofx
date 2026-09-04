@@ -40,10 +40,7 @@ engine.
 - Source Framerate: original media cadence, override it when the host only
   exposes the conformed timeline rate
 - Use Timeline Framerate / Target Framerate
-- Source Time Base: how the original frames are addressed. Defaults to
-  Conformed Cadence, which measures the host's resampling phase once and then
-  maps arithmetically (see [docs/cadence.md](docs/cadence.md))
-- Phase Override: debug escape hatch when calibration reports ambiguous
+- Phase Override: debug escape hatch when cadence calibration reports ambiguous
 - Mode: Quality or Advanced
 - Quality: Fast, Balanced, High, Maximum
 - Model: exact RIFE model selector

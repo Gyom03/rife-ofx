@@ -101,17 +101,9 @@ set(RIFE_PLUGIN_SOURCES
   src/TemporalFrameProvider.cpp
 )
 
-# The output-time -> source-frame mapping is pure and host independent, so it is
-# covered without Resolve, Vulkan or an OFX host in the loop.
-add_executable(TemporalMappingTest
-  src/TemporalMappingTest.cpp
-  src/TemporalMapping.cpp)
-target_compile_features(TemporalMappingTest PRIVATE cxx_std_17)
-target_include_directories(TemporalMappingTest PRIVATE "${OPENFX_INCLUDE_DIR}")
-add_test(NAME TemporalMappingTest COMMAND TemporalMappingTest)
-
 # Cadence ratio, phase calibration and the arithmetic mapping, including a walk
-# over 60 consecutive timeline frames.
+# over 60 consecutive timeline frames. Pure and host independent, so it runs
+# without Resolve, Vulkan or an OFX host in the loop.
 add_executable(CadenceMappingTest
   src/CadenceMappingTest.cpp
   src/CadenceMapping.cpp)

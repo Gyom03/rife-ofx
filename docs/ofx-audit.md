@@ -152,7 +152,7 @@ Ce qu'il faudrait changer pour devenir un vrai retimer, si Resolve le supporte :
 1. declarer `kOfxImageEffectContextRetimer` en premier dans
    `kOfxImageEffectPropSupportedContexts` ;
 2. supprimer les parametres `Source Framerate`, `Target Framerate`,
-   `Use Timeline Framerate` et `Source Time Base` du contexte retimer : la
+   et `Use Timeline Framerate` du contexte retimer : la
    cadence n'est plus notre affaire, l'hote fournit directement la position ;
 3. ne plus publier `kOfxImageEffectPropFrameRate` dans
    `getClipPreferences` — c'est l'hote qui decide de la duree de sortie ;

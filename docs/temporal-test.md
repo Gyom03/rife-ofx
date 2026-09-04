@@ -52,7 +52,7 @@ Relancer Resolve apres chaque installation.
 2. Clip > Retime Process > Nearest.
 3. Ajouter `RIFE Frame Interpolator` sur le clip.
 4. Mettre `Debug` a true.
-5. Laisser `Source Time Base` sur `Source Frames (OFX standard)`.
+5. Laisser la calibration de cadence se faire (13 frames consecutives).
 6. Verifier `Detected Framerate`. Si Resolve annonce 60 au lieu de 50, saisir
    `50` dans `Source Framerate` : le plugin ne devine pas la cadence originale a
    partir d'une valeur OFX qui vaut deja 60.
@@ -204,13 +204,13 @@ selon le temps de sortie qui l'a demandee.
 Dans ce cas, **ne pas ajouter de deduplication**. Marche a suivre :
 
 1. Conserver `%TEMP%\RifeOFX-temporal.log` tel quel.
-2. Rejouer le meme test avec `Source Time Base = Timeline Frames
-   (host conformed)`. Ce mode demande les temps `origine + N * 60/50`, donc des
-   temps fractionnaires : il repond a la question "Resolve echantillonne-t-il le
-   clip d'entree sur l'axe de la timeline ?".
-3. Rejouer avec le probe retimer (section suivante) pour savoir si Resolve
+2. Rejouer avec le probe retimer (section suivante) pour savoir si Resolve
    expose `kOfxImageEffectContextRetimer`.
-4. Reporter les trois traces dans `docs/ofx-audit.md`.
+3. Reporter les traces dans `docs/ofx-audit.md`.
+
+Ces deux questions ont ete tranchees : Resolve conforme bien l'entree, et
+n'expose pas le contexte retimer. Le plugin adresse desormais les originales
+dans le flux conforme, voir [cadence.md](cadence.md).
 
 ## 8. Probe du contexte Retimer
 

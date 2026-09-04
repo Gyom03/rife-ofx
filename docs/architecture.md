@@ -58,51 +58,27 @@ struct TemporalMapping {
 jamais d'une valeur codee en dur. `sourceFrameA = floor(sourcePosition)`,
 `sourceFrameB = sourceFrameA + 1`, `timestep = sourcePosition - sourceFrameA`.
 
-### Cadence conformee (mode par defaut)
+### Cadence conformee
 
-Le mode par defaut est `Conformed Cadence (auto phase)`. Il constate que l'hote
-a deja reechantillonne le clip et adresse les images originales dans le flux
-conforme, au lieu de supposer un axe temporel source separe. La phase du conform
-est mesuree une fois par comparaison de signatures, puis le mapping est
-entierement arithmetique sur un ratio rationnel. Voir [cadence.md](cadence.md).
+Resolve reechantillonne le clip sur la cadence de la timeline avant que l'effet
+ne le voie. Le plugin adresse donc les images originales **dans le flux
+conforme** : la phase du conform est mesuree une fois par comparaison de
+signatures, puis le mapping est entierement arithmetique sur un ratio rationnel.
+Voir [cadence.md](cadence.md).
 
-Les deux modes ci-dessous restent disponibles pour le diagnostic.
-
-### Index de frame vers OfxTime
-
-OpenFX ne definit pas de correspondance universelle entre un index de frame
-source et un `OfxTime`. La conversion est donc une politique explicite,
-`SourceTimeBase`, exposee dans l'interface :
-
-- `Source Frames (OFX standard)` : une unite de temps par frame source, comme
-  l'exemple retimer du SDK (`Support/Plugins/Retimer/retimer.cpp` fait
-  `fetchImage(floor(sourceTime))`). Les requetes sont toujours entieres.
-- `Timeline Frames (host conformed)` : la frame source `N` est a
-  `origine + N * outputFPS / sourceFPS`. Les requetes deviennent
-  fractionnaires. Ce mode sert a tester un hote qui reechantillonne le clip
-  d'entree sur la cadence de sortie avant que l'effet ne le voie.
-
-L'origine (`timelineOrigin`) est le temps OFX du debut du clip. Elle est choisie
-en testant le **temps de rendu** contre les plages annoncees, jamais une valeur
-derivee : `kOfxImageEffectPropFrameRange` du clip Source si `kOfxPropTime` tombe
-dedans (le clamp de bord est alors legitime), sinon celle du clip Output, sinon
-ancrage sur le temps de rendu lui-meme (degradation en passthrough, signalee par
-`anchor=unresolved`). Resolve peut annoncer une plage Source media-locale
-(`0..1999`) alors que `kOfxPropTime` est global a la composition (`6816`) :
-utiliser une plage venant d'un autre axe figerait chaque frame sur la meme
-image.
+C'est le seul mode. Deux politiques alternatives ont existe, `Source Frames` et
+`Timeline Frames`, construites sur l'hypothese que l'hote exposerait un axe
+temporel source distinct. Elles ont ete retirees : Resolve n'expose nulle part
+le debut du clip sur l'axe de rendu, donc elles etaient soit inertes, soit
+actives avec une origine erronee, ce qui ralentissait silencieusement le clip.
+L'historique de cette verification reste dans [ofx-audit.md](ofx-audit.md).
 
 ### Bords
 
-`computeTemporalMapping` traite explicitement : position avant la premiere frame
-media (`clampedAtStart`), voisine apres la derniere (`clampedAtEnd`), `timestep`
-proche de 0 ou 1 (`holdA` / `holdB`, aucune inference), cadences non entieres
-(23.976, 29.97, 59.94) via un snap a tolerance relative. Le clamp n'est applique
-que si la plage source annoncee est sur le meme axe que le temps de rendu ; une
-plage media-locale ne borne jamais un temps de composition global.
-
-`src/TemporalMappingTest.cpp` couvre ces cas sans hote OFX ni Vulkan
-(`ctest --test-dir build-rife -C Release`).
+Les bords sont traites dans la couche cadence : voir la section « Cas ou la
+calibration echoue » de [cadence.md](cadence.md). Quand la phase ne peut pas
+etre determinee, le rendu est un hold sur le temps courant, jamais une
+supposition.
 
 ## Acces temporel declare
 
