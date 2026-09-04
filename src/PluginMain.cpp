@@ -36,15 +36,12 @@ constexpr char kPluginIdentifier[] = "com.rifeofx.RifeFrameInterpolator";
 // whole test session chasing a bug that is already fixed.
 constexpr char kPluginBuildStamp[] = __DATE__ " " __TIME__;
 constexpr int kPluginMajor = 0;
-constexpr int kPluginMinor = 1;
-constexpr char kEnabledParam[] = "enabled";
+constexpr int kPluginMinor = 2;
 constexpr char kDetectedFrameRateParam[] = "detectedFrameRate";
 constexpr char kSourceFrameRateParam[] = "sourceFrameRate";
 constexpr char kUseTimelineFrameRateParam[] = "useTimelineFrameRate";
 constexpr char kTargetFrameRateParam[] = "targetFrameRate";
 constexpr char kPhaseOverrideParam[] = "phaseOverride";
-constexpr char kModeParam[] = "mode";
-constexpr char kQualityParam[] = "quality";
 constexpr char kDebugParam[] = "debug";
 constexpr char kModelParam[] = "model";
 constexpr char kGpuDeviceParam[] = "gpuDevice";
@@ -55,8 +52,6 @@ constexpr const char* kModelLabels[] = {
     "RIFE 4.6",       "RIFE 4.22 Lite", "RIFE 4.25 Lite",
     "RIFE 4.25",      "RIFE 4.26",      "RIFE 4.26 Large"};
 constexpr int kModelCount = static_cast<int>(sizeof(kModelIds) / sizeof(kModelIds[0]));
-constexpr int kQualityModelIndexes[] = {1, 2, 3, 5};
-constexpr const char* kQualityLabels[] = {"Fast", "Balanced", "High", "Maximum"};
 
 OfxHost* gHost = nullptr;
 const OfxPropertySuiteV1* gPropertySuite = nullptr;
@@ -118,14 +113,11 @@ struct InstanceData {
   OfxImageEffectHandle effect = nullptr;
   OfxImageClipHandle sourceClip = nullptr;
   OfxImageClipHandle outputClip = nullptr;
-  OfxParamHandle enabledParam = nullptr;
   OfxParamHandle detectedFrameRateParam = nullptr;
   OfxParamHandle sourceFrameRateParam = nullptr;
   OfxParamHandle useTimelineFrameRateParam = nullptr;
   OfxParamHandle targetFrameRateParam = nullptr;
   OfxParamHandle phaseOverrideParam = nullptr;
-  OfxParamHandle modeParam = nullptr;
-  OfxParamHandle qualityParam = nullptr;
   OfxParamHandle debugParam = nullptr;
   OfxParamHandle modelParam = nullptr;
   OfxParamHandle gpuDeviceParam = nullptr;
@@ -247,15 +239,6 @@ void logHostInt(const char* property, const char* label) {
     stream << "host " << label << "=" << value;
     rifeofx::debugLog(stream.str());
   }
-}
-
-bool getBoolParam(const InstanceData* data, OfxTime time) {
-  int enabled = 1;
-  if (!data || !data->enabledParam ||
-      gParameterSuite->paramGetValueAtTime(data->enabledParam, time, &enabled) != kOfxStatOK) {
-    return true;
-  }
-  return enabled != 0;
 }
 
 bool getDebugParam(const InstanceData* data, OfxTime time) {
@@ -384,12 +367,6 @@ void updateTargetFrameRateEnabled(InstanceData* data, OfxTime time) {
 std::string getSelectedModelId(const InstanceData* data, OfxTime time) {
   const int modelIndex = std::clamp(
       getChoiceParam(data ? data->modelParam : nullptr, time, 0), 0, kModelCount - 1);
-  const int mode = getChoiceParam(data ? data->modeParam : nullptr, time, 1);
-  if (mode == 0) {
-    const int qualityIndex = std::clamp(
-        getChoiceParam(data ? data->qualityParam : nullptr, time, 1), 0, 3);
-    return kModelIds[kQualityModelIndexes[qualityIndex]];
-  }
   return kModelIds[modelIndex];
 }
 
@@ -1228,17 +1205,6 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
     }
   }
 
-  status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeBoolean,
-                                        kEnabledParam, &paramProps);
-  if (status != kOfxStatOK) {
-    return status;
-  }
-  setString(paramProps, kOfxPropLabel, 0, "Enabled");
-  setString(paramProps, kOfxParamPropScriptName, 0, kEnabledParam);
-  setString(paramProps, kOfxParamPropHint, 0,
-            "Enable or disable the RIFE temporal render");
-  setInt(paramProps, kOfxParamPropDefault, 0, 1);
-
   status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeDouble,
                                         kDetectedFrameRateParam, &paramProps);
   if (status != kOfxStatOK) {
@@ -1311,30 +1277,6 @@ OfxStatus describeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
   setInt(paramProps, kOfxParamPropMin, 0, -1);
   setInt(paramProps, kOfxParamPropMax, 0, 63);
   setInt(paramProps, kOfxParamPropAnimates, 0, 0);
-
-  status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeChoice,
-                                        kModeParam, &paramProps);
-  if (status != kOfxStatOK) {
-    return status;
-  }
-  setString(paramProps, kOfxPropLabel, 0, "Mode");
-  setString(paramProps, kOfxParamPropScriptName, 0, kModeParam);
-  setString(paramProps, kOfxParamPropChoiceOption, 0, "Quality");
-  setString(paramProps, kOfxParamPropChoiceOption, 1, "Advanced");
-  setInt(paramProps, kOfxParamPropDefault, 0, 1);
-
-  status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeChoice,
-                                        kQualityParam, &paramProps);
-  if (status != kOfxStatOK) {
-    return status;
-  }
-  setString(paramProps, kOfxPropLabel, 0, "Quality");
-  setString(paramProps, kOfxParamPropScriptName, 0, kQualityParam);
-  for (int index = 0; index < 4; ++index) {
-    setString(paramProps, kOfxParamPropChoiceOption, index,
-              kQualityLabels[index]);
-  }
-  setInt(paramProps, kOfxParamPropDefault, 0, 1);
 
   status = gParameterSuite->paramDefine(paramSet, kOfxParamTypeBoolean,
                                         kDebugParam, &paramProps);
@@ -1416,9 +1358,6 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
   OfxParamSetHandle paramSet = nullptr;
   status = gImageEffectSuite->getParamSet(effect, &paramSet);
   if (status == kOfxStatOK) {
-    status = fetchOptionalParam(paramSet, kEnabledParam, &data->enabledParam);
-  }
-  if (status == kOfxStatOK) {
     status = fetchOptionalParam(paramSet, kDetectedFrameRateParam,
                                 &data->detectedFrameRateParam);
   }
@@ -1437,12 +1376,6 @@ OfxStatus createInstance(OfxImageEffectHandle effect) {
   if (status == kOfxStatOK) {
     status = fetchOptionalParam(paramSet, kPhaseOverrideParam,
                                 &data->phaseOverrideParam);
-  }
-  if (status == kOfxStatOK) {
-    status = fetchOptionalParam(paramSet, kModeParam, &data->modeParam);
-  }
-  if (status == kOfxStatOK) {
-    status = fetchOptionalParam(paramSet, kQualityParam, &data->qualityParam);
   }
   if (status == kOfxStatOK) {
     status = fetchOptionalParam(paramSet, kDebugParam, &data->debugParam);
@@ -1631,30 +1564,6 @@ OfxStatus getClipPreferences(OfxImageEffectHandle effect,
     rifeofx::debugLog(stream.str());
   }
   return frameVaryingStatus == kOfxStatOK ? kOfxStatOK : frameVaryingStatus;
-}
-
-OfxStatus isIdentity(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
-                     OfxPropertySetHandle outArgs) {
-  InstanceData* data = getInstanceData(effect);
-  if (!data) {
-    return kOfxStatErrBadHandle;
-  }
-
-  OfxTime time = 0.0;
-  if (gPropertySuite->propGetDouble(inArgs, kOfxPropTime, 0, &time) != kOfxStatOK) {
-    return kOfxStatReplyDefault;
-  }
-
-  // Only the explicit off switch short-circuits the effect. A zero timestep is
-  // deliberately still rendered through the temporal path so the trace shows
-  // which source frame the host actually returned.
-  if (!getBoolParam(data, time)) {
-    gPropertySuite->propSetString(outArgs, kOfxPropName, 0,
-                                  kOfxImageEffectSimpleSourceClipName);
-    gPropertySuite->propSetDouble(outArgs, kOfxPropTime, 0, time);
-    return kOfxStatOK;
-  }
-  return kOfxStatReplyDefault;
 }
 
 OfxStatus getFramesNeeded(OfxImageEffectHandle effect,
@@ -1953,10 +1862,6 @@ OfxStatus pluginMain(const char* action, const void* handle,
   if (std::strcmp(action, kOfxImageEffectActionGetClipPreferences) == 0) {
     return getClipPreferences(
         static_cast<OfxImageEffectHandle>(const_cast<void*>(handle)), outArgs);
-  }
-  if (std::strcmp(action, kOfxImageEffectActionIsIdentity) == 0) {
-    return isIdentity(static_cast<OfxImageEffectHandle>(const_cast<void*>(handle)),
-                      inArgs, outArgs);
   }
   if (std::strcmp(action, kOfxImageEffectActionGetFramesNeeded) == 0) {
     return getFramesNeeded(static_cast<OfxImageEffectHandle>(const_cast<void*>(handle)),

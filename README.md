@@ -35,19 +35,14 @@ engine.
 
 ## Controls
 
-- Enabled
+- Model: the RIFE model to use
 - Detected Framerate (read-only, reported by the host)
 - Source Framerate: original media cadence, override it when the host only
   exposes the conformed timeline rate
 - Use Timeline Framerate / Target Framerate
-- Phase Override: debug escape hatch when cadence calibration reports ambiguous
-- Mode: Quality or Advanced
-- Quality: Fast, Balanced, High, Maximum
-- Model: exact RIFE model selector
 - GPU Device
 - Debug
-
-Quality maps to RIFE 4.22 Lite, 4.25 Lite, 4.25 and 4.26 Large respectively.
+- Phase Override: debug escape hatch when cadence calibration reports ambiguous
 
 ## Build from source
 
