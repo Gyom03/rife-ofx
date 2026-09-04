@@ -47,12 +47,16 @@ de l'action; une image ne peut pas etre conservee au dela.
 
 OFX ne fournit pas d'API semantique `previousFrame`/`nextFrame`, et ne definit
 pas non plus la correspondance entre un index de frame source et un `OfxTime`.
-C'est pour cela que la conversion est une politique explicite dans
-`src/TemporalMapping.h` (`SourceTimeBase`) plutot qu'une hypothese implicite.
 Le seul point de reference du SDK est l'exemple retimer
 (`Support/Plugins/Retimer/retimer.cpp:147-152`), qui fait
 `fetchImage(floor(sourceTime))` puis `fetchImage(floor(sourceTime) + 1)` : une
-unite de temps par frame source. C'est la valeur par defaut du plugin.
+unite de temps par frame source.
+
+Deux politiques ont ete implementees et testees sur cette base, `Source Frames`
+et `Timeline Frames`. Les deux ont ete retirees : elles supposent que l'hote
+expose le debut du clip sur l'axe de rendu, et Resolve ne le fait pas. Le plugin
+adresse desormais les originales dans le flux conforme, voir
+[cadence.md](cadence.md).
 
 Une image peut ne pas exister aux bornes. Le statut retourne par l'hote est
 propage et journalise (`fetchImage B unavailable ... status=...`), puis la
@@ -144,8 +148,13 @@ La reponse experimentale est la ligne :
 ```
 
 Si elle n'apparait jamais, Resolve ne propose pas ce contexte. Si elle apparait
-et qu'une instance est creee, `retimer SourceTime param present=1` le confirme,
-et la trace de rendu passe a `hostProvidedPosition=1`.
+et qu'une instance est creee, `SourceTime paramGetHandle status=0 present=1` le
+confirme.
+
+Resultat mesure : la propriete est acceptee (`dimension=2 [0]=Filter
+[1]=Retimer`), mais `describeInContext` n'est appele qu'avec `Filter`, et
+`SourceTime` renvoie `status=3` (`kOfxStatErrUnknown`) dans tous les contextes.
+Resolve ignore silencieusement l'entree Retimer.
 
 Ce qu'il faudrait changer pour devenir un vrai retimer, si Resolve le supporte :
 

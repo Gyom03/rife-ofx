@@ -49,13 +49,14 @@ Les poids 4.25 restent externes.
 ctest --test-dir build-rife -C Release --output-on-failure
 ```
 
-`TemporalMappingTest` couvre la conversion temps de sortie -> position source
-sans hote OFX ni GPU : 50 -> 60, cadences NTSC, origine de timeline non nulle,
-bords de clip, timestep proche de 0 ou 1, et les deux `SourceTimeBase`.
-Le lancer aussi directement :
+`CadenceMappingTest` couvre le ratio rationnel, la calibration de phase et le
+mapping arithmetique, sans hote OFX ni GPU : reduction des cadences NTSC,
+recuperation de chaque phase pour quatre cadences, marche sur soixante frames
+consecutives, et les cas ou la calibration doit refuser de conclure.
 
 ```powershell
-& .\build-rife\Release\TemporalMappingTest.exe
+& .\build-rife\Release\CadenceMappingTest.exe
+& .\build-rife\Release\CadenceMappingTest.exe --dump   # imprime un cycle complet
 ```
 
 ## Tester RIFE sans Resolve

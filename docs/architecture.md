@@ -95,9 +95,9 @@ supposition.
 `kOfxImageEffectContextRetimer` existe dans le SDK. Il n'est pas declare par
 defaut : la variable d'environnement `RIFEOFX_PROBE_RETIMER=1` l'ajoute comme
 contexte secondaire pour observer si l'hote le propose. Le parametre mandate
-`SourceTime` est alors defini, et `buildTemporalMapping` l'utilise comme
-position source a la place du calcul de cadence (`hostProvidedPosition=1` dans
-la trace). Voir `docs/ofx-audit.md`.
+`SourceTime` est alors defini et lu. Resultat mesure : Resolve n'appelle jamais
+`describeInContext` avec ce contexte, et `SourceTime` est inconnu dans tous les
+contextes. Voir [ofx-audit.md](ofx-audit.md).
 
 ## Moteur multi-modeles
 

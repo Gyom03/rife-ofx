@@ -77,8 +77,8 @@ cmake --build build-rife --config Release --parallel
 ctest --test-dir build-rife -C Release --output-on-failure
 ```
 
-`ctest` runs `TemporalMappingTest`, which covers the output-time to source-frame
-mapping without an OFX host or a GPU.
+`ctest` runs `CadenceMappingTest`, which covers the rational cadence ratio, the
+phase calibration and the arithmetic mapping without an OFX host or a GPU.
 
 To build a bundle containing all local model files, provide a model root with
 the six directories named exactly as in `models/registry.csv`:

@@ -73,144 +73,97 @@ $env:RIFEOFX_DEBUG = "1"
 - Fichier persistant : `%TEMP%\RifeOFX-temporal.log`. Le chemin exact est
   imprime au chargement du plugin (`temporal log file=...`).
 
-## 5. Logs attendus
+## 5. Resultat de l'experience
+
+Les deux questions que ce document servait a trancher le sont :
+
+**Resolve conforme le media avant que l'effet ne le voie.** Mesure sur le chemin
+de rendu, clip 50 fps sur timeline 60 fps : un doublon exact toutes les six
+frames, cinq images originales par cycle.
+
+```text
+7003  sigA=0xa33e63a56f06
+7004  sigA=0xa33e63a56f06   <- doublon
+7009  sigA=0xe832df075eee
+7010  sigA=0xe832df075eee   <- doublon
+```
+
+**Resolve n'expose pas le contexte Retimer** (section 8), et n'expose nulle part
+le debut du clip sur l'axe de rendu : toutes les plages sont clip-locales
+(`0..1999`) alors que `kOfxPropTime` est global a la composition (`6975`).
+
+Le plugin adresse donc les images originales dans le flux conforme. La phase du
+conform est mesuree une fois, puis le mapping est arithmetique. Voir
+[cadence.md](cadence.md) pour l'architecture et la procedure de verification.
+
+## 6. Logs attendus
 
 Au chargement :
 
 ```text
+[RifeOFX] plugin build=Sep  4 2026 16:00:59
 [RifeOFX] host name=DaVinciResolve
 [RifeOFX] host temporalClipAccess=1
 [RifeOFX] plugin temporalClipAccess setStatus=0 readBackStatus=0 value=1
 [RifeOFX] describeInContext context=OfxImageEffectContextFilter
 [RifeOFX] source clip temporalClipAccess setStatus=0 readBackStatus=0 value=1
-[RifeOFX] retimer SourceTime param status=... present=0 retimerContext=0
-[RifeOFX] clip timing sourceConnected=1 sourceFrameRate(mapped)=... \
-          sourceFrameRate(unmapped)=... outputFrameRate(mapped)=... \
-          projectFrameRate=... sourceFrameRange=... outputFrameRange=... \
-          continuousSamples=0
+[RifeOFX] clip timing sourceConnected=1 sourceFrameRate(mapped)=60.000000           sourceFrameRate(unmapped)=60.000000 outputFrameRate(mapped)=60.000000           projectFrameRate=60.000000 sourceFrameRange=0.000..1999.000           outputFrameRange=0.000..1999.000 continuousSamples=0
+[RifeOFX] source frame rate current=50 default=60 hostReported=60 -> kept (user value)
+[RifeOFX] calibration=calibrated phase=0 manual=0 periodSource=5 periodTimeline=6           samples=13/13 reason=run=13 from=6975 distinct=11 repeats=2
 ```
 
-Pour chaque frame de sortie :
+Verifier en premier la ligne `plugin build=` : si elle ne correspond pas au
+dernier build, Resolve tourne sur un ancien bundle et rien d'autre n'est
+interpretable.
+
+Par frame de sortie, filtre `[RifeOFX][Cadence]` :
 
 ```text
-[RifeOFX]
-outputTime=123.000
-outputFrame=123
-sourceFPS=50.000
-outputFPS=60.000
-sourcePosition=102.500000
-timelineOrigin=0.000
-sourceFrameA=102
-sourceFrameB=103
-sourceTimeA=102.000000
-sourceTimeB=103.000000
-timestep=0.500000
-timeBase=sourceFrames
-policy=interpolate
-anchor=sourceFrameRange anchorResolved=1 clampEnabled=1
-clampedAtStart=0 clampedAtEnd=0 ratesValid=1 hostProvidedPosition=0
-
-[RifeOFX] fetchImage A requestedTime=102.000000
-[RifeOFX] clipGetImage requestedTime=102.000000 status=0 bounds=[0,0,1920,1080] rowBytes=30720
-[RifeOFX] fetchImage B requestedTime=103.000000
-[RifeOFX] clipGetImage requestedTime=103.000000 status=0 bounds=[0,0,1920,1080] rowBytes=30720
-[RifeOFX] frameA_debug_signature=0x1f3a... frameB_debug_signature=0x90c7... identicalImages=0
+[RifeOFX][Cadence]
+timelineTime=6979
+phase=0
+cyclePosition=1
+periodSource=5 periodTimeline=6
+sourcePosition=5815.833333
+sourceFrameA=5815
+sourceFrameB=5816
+timelineTimeA=6978.000
+timelineTimeB=6980.000
+timestep=0.833333
+signatureA=0x02921c816438e610
+signatureB=0xc8d9d419005d2246
+rifeInference=1
+calibration=calibrated policy=interpolate identicalInputs=0 renderScale=1x1 sourceBounds=2560x1440
 ```
 
-Et, en amont du rendu :
+Et, une seule fois par instance :
 
 ```text
-[RifeOFX] getFramesNeeded outputTime=123.000000 sourceRange=[102.000000,103.000000] policy=interpolate thumbnail=0 status=0
-```
-
-Et, une seule fois par instance, la mesure qui tranche la question de l'axe :
-
-```text
-[RifeOFX] renderTimeProbe requestedTime=6816.000000 status=0 addressable=1 signature=0x... matchesMappedFrameA=0 mappedTimeA=6811.000000
-[RifeOFX] cadenceProbe from=6384.000 length=13 pattern=AABCDEFFGHIJK distinct=11
+[RifeOFX] renderTimeProbe requestedTime=6975.000000 status=0 addressable=1 signature=0x...
+[RifeOFX] cadenceProbe source=renderPath from=6975.000 length=13 pattern=AABCDEFFGHIJK distinct=11
 ```
 
 `cadenceProbe` etiquette treize temps de rendu consecutifs par la premiere
-occurrence de chaque image :
+occurrence de chaque image, a partir des images que le rendu a reellement
+recues :
 
-- `ABCDEFGHIJKLM`, `distinct=13` : chaque frame de la timeline porte une image
-  differente, l'entree n'est pas conformee ;
-- `AABCDEFFGHIJK`, `distinct=11` : une image est repetee tous les six temps.
-  L'hote a conforme le media 50 -> 60 avant que l'effet ne le voie, et la
-  position de la repetition donne la phase du conform.
-
-## 6. Ancrage temporel
-
-`timelineOrigin` est le temps OFX qui correspond a la position source 0, c'est a
-dire le debut du clip sur l'axe utilise par `kOfxPropTime`. Il est choisi a
-partir du temps de rendu, pas d'une valeur derivee :
-
-| `anchor=` | Condition | Clamp |
-|-----------|-----------|-------|
-| `sourceFrameRange` | `outputTime` tombe dans la plage du clip Source | oui |
-| `outputFrameRange` | `outputTime` tombe dans la plage du clip Output | non |
-| `unresolved ...` | aucune plage annoncee ne contient `outputTime` | non |
-
-Resolve peut annoncer une plage Source media-locale (`0..1999`) alors que le
-temps de rendu est global a la composition (`6816`). Une plage venant d'un autre
-axe ne doit jamais localiser le clip ni borner une requete : cela figerait
-chaque frame sur la meme image. Quand aucune plage ne convient, l'ancrage se
-fait sur le temps de rendu lui-meme, ce qui degrade en passthrough plutot que de
-demander une frame source a plusieurs centaines d'images du curseur. La ligne
-`anchor=unresolved ...` signale ce cas.
-
-`renderTimeProbe` demande explicitement l'image au temps de rendu brut :
-
-- `addressable=1` : le clip d'entree est adressable sur l'axe du rendu, donc une
-  plage media-locale est bien a ignorer, et `outputFrameRange` est le bon
-  ancrage ;
-- `addressable=0` : le clip est adresse sur un autre axe, et il faudra
-  determiner la correspondance timeline -> media avant d'aller plus loin ;
-- `matchesMappedFrameA=1` avec un `mappedTimeA` different du temps de rendu :
-  l'hote renvoie la meme image pour deux temps distincts, donc le clip est
-  probablement deja conforme.
+- `ABCDEFGHIJKLM`, `distinct=13` : une image differente par frame, entree non
+  conformee ;
+- `AABCDEFFGHIJK`, `distinct=11` : une image repetee tous les six temps, entree
+  conformee, et la position de la repetition donne la phase.
 
 ## 7. Ce qu'il faut verifier
 
-Sur six frames de sortie consecutives en 50 -> 60, `sourcePosition` doit suivre
-le cycle :
+Sur soixante frames consecutives :
 
-```text
-0.0000  0.8333  1.6667  2.5000  3.3333  4.1667  5.0000 ...
-```
-
-et donc `timestep` :
-
-```text
-0.0000  0.8333  0.6667  0.5000  0.3333  0.1667  0.0000 ...
-```
-
-`sourceFrameA` doit avancer 0, 0, 1, 2, 3, 4, 5 : cinq frames source pour six
-frames de sortie.
-
-### Cas A : l'acces temporel fonctionne
-
-`frameA_debug_signature` et `frameB_debug_signature` different a chaque frame ou
-`policy=interpolate`, et la signature de la frame source `N` est la meme quel
-que soit le temps de sortie qui la demande. Resolve nous donne bien les frames
-originales et le plugin possede la conversion 50 -> 60.
-
-### Cas B : Resolve renvoie des frames deja conformees
-
-Symptomes : `identicalImages=1` sur des paires ou `timestep` est franchement
-fractionnaire, ou bien la signature obtenue pour `requestedTime=102` change
-selon le temps de sortie qui l'a demandee.
-
-Dans ce cas, **ne pas ajouter de deduplication**. Marche a suivre :
-
-1. Conserver `%TEMP%\RifeOFX-temporal.log` tel quel.
-2. Rejouer avec le probe retimer (section suivante) pour savoir si Resolve
-   expose `kOfxImageEffectContextRetimer`.
-3. Reporter les traces dans `docs/ofx-audit.md`.
-
-Ces deux questions ont ete tranchees : Resolve conforme bien l'entree, et
-n'expose pas le contexte retimer. Le plugin adresse desormais les originales
-dans le flux conforme, voir [cadence.md](cadence.md).
+1. `timestep` suit le cycle `0, 0.8333, 0.6667, 0.5, 0.3333, 0.1667` ;
+2. `timelineTimeA != timelineTimeB` des que `rifeInference=1` ;
+3. `identicalInputs=0` sur toutes les frames interpolees ;
+4. `sourceFrameA` avance de 50 sur 60 frames de timeline ;
+5. les temps jamais demandes sont exactement les doublons de l'hote, tous a la
+   meme position de cycle ;
+6. `calibration=calibrated` apparait une fois et ne revient pas ;
+7. aucune ligne `source does not cover the render window`.
 
 ## 8. Probe du contexte Retimer
 
@@ -234,18 +187,23 @@ Lignes a chercher :
 
 - Si `describeInContext context=OfxImageEffectContextRetimer` n'apparait jamais,
   Resolve n'offre pas ce contexte aux plugins OFX tiers.
-- S'il apparait, `hostProvidedPosition=1` dans la trace de rendu indique que la
-  position source vient de `SourceTime` fourni par l'hote, et non plus de notre
-  calcul de cadence.
+- S'il apparait, `SourceTime paramGetHandle status=0 present=1` confirme que le
+  parametre mandate existe et que la position source pourrait venir de l'hote.
+
+Resultat mesure : `describeInContext` n'est appele qu'avec `Filter`, et
+`SourceTime` renvoie `status=3` (`kOfxStatErrUnknown`) dans tous les contextes.
 
 ## 9. Cas limites a couvrir pendant le test
 
-- premiere frame du clip : `clampedAtStart=1`, `policy=holdA`, une seule image ;
-- derniere frame du clip : `clampedAtEnd=1`, `policy=holdA` ;
-- `timestep` proche de 0 ou 1 : `policy=holdA` / `holdB`, aucune inference ;
-- cadence non entiere (23.976, 29.97, 59.94) : `sourcePosition` doit rester
-  exactement entier quand source et sortie ont la meme cadence ;
-- media trimme : verifier `sourceFrameRange`, `timelineOrigin` et `anchor=` dans
-  le log. Si le temps de rendu tombe hors de la plage source annoncee, le clamp
-  est desactive et signale : c'est volontaire, une plage media-locale ne doit pas
-  borner un temps de composition global.
+- `timestep` exactement 0 : `policy=holdA`, `rifeInference=0`, une seule image
+  demandee ;
+- cadence non entiere (23.976, 29.97, 59.94) : le ratio doit se reduire
+  exactement, `periodSource`/`periodTimeline` le montre ;
+- cadences identiques : `calibration=notApplicable`, passthrough ;
+- clip statique ou fondu : `calibration=ambiguous`, passthrough, jamais de
+  supposition ;
+- rendu proxy et pleine resolution sur le meme temps : `renderScale` doit
+  apparaitre dans la trace et `source does not cover the render window` ne doit
+  jamais apparaitre.
+
+Le detail de chaque cas d'echec de calibration est dans [cadence.md](cadence.md).
